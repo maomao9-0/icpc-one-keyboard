@@ -1,0 +1,8 @@
+{
+  "scripts": {
+    "test:e2e": "node tests/run-e2e.cjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.61.1"
+  }
+}
