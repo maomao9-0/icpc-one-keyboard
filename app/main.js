@@ -8,6 +8,7 @@ import {
   teammateEntries,
   trimmedActionNote,
 } from "./helpers.js";
+import { sessionPayload, sessionQuery } from "./security.js";
 import { actionNoteLimit, api, app, defaults, state } from "./state.js";
 import { viewMarkup } from "./views.js";
 
@@ -40,6 +41,11 @@ async function call(body) {
     setSession(data.session, data.code);
     return data;
   } catch (err) {
+    if (err.message.includes("You were removed from this session") || err.message === "Session access denied") {
+      resetToHome();
+      toast(err.message, true, true);
+      return;
+    }
     toast(err.message, true);
   } finally {
     state.network.writeInFlight = Math.max(0, state.network.writeInFlight - 1);
@@ -53,12 +59,7 @@ async function poll() {
   const generation = state.network.pollGeneration;
   const writeInFlight = state.network.writeInFlight;
   try {
-    const params = new URLSearchParams({
-      code: state.identity.code,
-      clientId: state.identity.clientId,
-      name: state.identity.name,
-    });
-    const res = await fetch(`${api}?${params}`);
+    const res = await fetch(`${api}?${sessionQuery()}`);
     const data = await res.json();
     if (!res.ok) throw new Error(data.error);
     if (writeInFlight > 0 || generation !== state.network.pollGeneration) return;
@@ -73,6 +74,11 @@ async function poll() {
     if ((changed || hadIssue) && !editingModal()) render();
   } catch (err) {
     const issue = err.message || "Could not sync session";
+    if (issue.includes("You were removed from this session") || issue === "Session access denied") {
+      resetToHome();
+      toast(issue, true, true);
+      return;
+    }
     if (state.network.syncIssue !== issue) {
       state.network.syncIssue = issue;
       if (!editingModal()) render();
@@ -154,12 +160,7 @@ function requireName() {
 
 function leavePayload() {
   if (!state.session || !state.identity.code || !state.identity.clientId || !state.identity.name) return null;
-  return {
-    action: "leave",
-    code: state.identity.code,
-    clientId: state.identity.clientId,
-    name: state.identity.name,
-  };
+  return sessionPayload("leave");
 }
 
 function resetToHome() {
@@ -218,23 +219,14 @@ app.addEventListener("submit", (event) => {
     state.identity.code = String(data.code || "").trim().toUpperCase();
     localStorage.setItem("name", state.identity.name);
     if (event.submitter.value === "create") {
-      call({ action: "create", clientId: state.identity.clientId, name: state.identity.name, durationMs: defaults.durationMs });
+      call(sessionPayload("create", { name: state.identity.name, durationMs: defaults.durationMs }));
     } else {
-      call({ action: "join", code: state.identity.code, clientId: state.identity.clientId, name: state.identity.name });
+      call(sessionPayload("join", { name: state.identity.name }));
     }
     requestNotifications();
   }
   if (form.dataset.form === "save-settings") {
-    state.identity.name = data.name.trim();
-    localStorage.setItem("name", state.identity.name);
-    call({
-      action: "settings",
-      code: state.identity.code,
-      clientId: state.identity.clientId,
-      name: state.identity.name,
-      timerEnabled: true,
-      durationMs: durationFromFields(data),
-    });
+    call(sessionPayload("settings", { timerEnabled: true, durationMs: durationFromFields(data) }));
     state.ui.settingsOpen = false;
   }
 });
@@ -293,22 +285,16 @@ document.addEventListener("click", async (event) => {
     return;
   }
   if (action === "timer-toggle") {
-    await call({
-      action: "timer",
-      command: state.session.timerRunning ? "stop" : "start",
-      code: state.identity.code,
-      clientId: state.identity.clientId,
-      name: state.identity.name,
-    });
+    await call(sessionPayload("timer", { command: state.session.timerRunning ? "stop" : "start" }));
   }
   if (action === "timer-reset") {
-    await call({ action: "timer", command: "reset", code: state.identity.code, clientId: state.identity.clientId, name: state.identity.name });
+    await call(sessionPayload("timer", { command: "reset" }));
   }
   if (action === "request-accept") {
-    await call({ action: "requestAccept", code: state.identity.code, clientId: state.identity.clientId, name: state.identity.name });
+    await call(sessionPayload("requestAccept"));
   }
   if (action === "request-reject") {
-    await call({ action: "requestReject", code: state.identity.code, clientId: state.identity.clientId, name: state.identity.name });
+    await call(sessionPayload("requestReject"));
   }
   if (action === "confirm-leave") {
     state.ui.leaveOpen = false;
@@ -324,25 +310,13 @@ document.addEventListener("click", async (event) => {
     state.ui.kickTarget = null;
     render();
     if (target) {
-      await call({
-        action: "kick",
-        code: state.identity.code,
-        clientId: state.identity.clientId,
-        name: state.identity.name,
-        targetClientId: target.clientId,
-      });
+      await call(sessionPayload("kick", { targetClientId: target.clientId }));
     }
     return;
   }
   if (action === "primary" && requireName()) {
     const next = primaryActionFor(state.identity.clientId, state.session);
-    const result = await call({
-      action: next,
-      code: state.identity.code,
-      clientId: state.identity.clientId,
-      name: state.identity.name,
-      note: trimmedActionNote(state.ui.actionNote),
-    });
+    const result = await call(sessionPayload(next, { note: trimmedActionNote(state.ui.actionNote), name: state.identity.name }));
     if (result) {
       state.ui.actionNote = "";
       state.ui.actionNoteOpen = false;

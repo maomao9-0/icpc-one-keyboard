@@ -1,6 +1,15 @@
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const {
+  attachMemberAuth,
+  normalizeName,
+  parseClientId,
+  parseClientKey,
+  parseName,
+  publicSession,
+  sameOrigin,
+} = require("./security.js");
 
 let sessions = globalThis.__oneKeyboardSessions || new Map();
 globalThis.__oneKeyboardSessions = sessions;
@@ -15,6 +24,9 @@ const actions = ["join", "claim", "release", "leave", "kick", "request", "reques
 module.exports = function handler(req, res) {
   res.setHeader("cache-control", "no-store");
   try {
+    if (req.method === "POST" && !sameOrigin(req)) {
+      return res.status(403).json({ error: "Origin not allowed" });
+    }
     loadSessions();
     const prunedStale = pruneStaleSessions();
     if (prunedStale) saveSessions();
@@ -31,11 +43,12 @@ function getSession(req, res) {
   const session = sessions.get(code);
   if (!session) return res.status(404).json({ error: "Session not found" });
   ensureSession(session);
-  if (req.query.clientId && req.query.name && canRefreshMember(session, req.query.clientId)) touch(session, req.query);
+  authorizeMember(session, req.query, { allowMissingMembership: false, allowRemoved: false });
+  if (canRefreshMember(session, req.query.clientId)) touch(session, req.query);
   expireRequest(session);
   pruneSession(code, session);
   saveSessions();
-  return res.json({ session });
+  return res.json({ session: publicSession(session) });
 }
 
 function remaining(session, now = Date.now()) {
@@ -57,14 +70,14 @@ function timer(session, body) {
     session.clockMode = "relative";
     session.runningSince = now;
     session.timerRunning = session.remainingMs > 0;
-    event(session, body, "started the timer", `${name(body)} started the timer`);
+    event(session, body, "started the timer", `${memberName(session, body)} started the timer`);
     return;
   }
   if (command === "stop") {
     session.remainingMs = remaining(session, now);
     session.runningSince = null;
     session.timerRunning = false;
-    event(session, body, "stopped the timer", `${name(body)} stopped the timer`);
+    event(session, body, "stopped the timer", `${memberName(session, body)} stopped the timer`);
     return;
   }
   if (command === "reset") {
@@ -72,7 +85,7 @@ function timer(session, body) {
     session.remainingMs = session.durationMs;
     session.runningSince = null;
     session.timerRunning = false;
-    event(session, body, "reset the timer", `${name(body)} reset the timer`);
+    event(session, body, "reset the timer", `${memberName(session, body)} reset the timer`);
     if (hadRelativeClock) session.clockMode = "local";
     return;
   }
@@ -86,6 +99,9 @@ function ensureSession(session) {
   session.runningSince = session.timerRunning ? Number(session.runningSince || Date.now()) : null;
   session.clockMode ||= session.timerStartedAt ? "relative" : "local";
   session.members ||= {};
+  for (const member of Object.values(session.members)) {
+    if (!member.authKey) member.authKey = "";
+  }
   session.events ||= [];
   session.removedClients ||= {};
   session.lastActivityAt = Number(session.lastActivityAt || sessionActivityAt(session));
@@ -118,15 +134,19 @@ function postSession(req, res) {
     };
     sessions.set(code, session);
     touch(session, body);
-    event(session, body, "created the session", `${name(body)} created the session`);
+    event(session, body, "created the session", `${memberName(session, body)} created the session`);
     saveSessions();
-    return res.json({ code, session });
+    return res.json({ code, session: publicSession(session) });
   }
 
   const session = sessions.get(cleanCode(body.code));
   if (!session) return res.status(404).json({ error: "Session not found" });
   ensureSession(session);
-  ensureClientId(body);
+  if (action === "join") {
+    ensureJoinAllowed(session, body);
+  } else {
+    authorizeMember(session, body);
+  }
   if (action !== "join" && isRemovedClient(session, body.clientId)) {
     return res.status(403).json({ error: "You were removed from this session. Join again to continue." });
   }
@@ -148,14 +168,14 @@ function postSession(req, res) {
 
   const deleted = pruneSession(cleanCode(body.code), session);
   saveSessions();
-  return res.json(deleted ? { session: null, deleted: true } : { session });
+  return res.json(deleted ? { session: null, deleted: true } : { session: publicSession(session) });
 }
 
 function join(session, body) {
-  const memberName = name(body);
-  const normalizedName = normalizeName(memberName);
+  const memberName = parseName(body.name);
+  const normalizedMemberName = normalizeName(memberName).toLowerCase();
   const duplicate = Object.entries(session.members || {}).find(([clientId, member]) => {
-    return clientId !== body.clientId && normalizeName(member.name) === normalizedName;
+    return clientId !== body.clientId && normalizeName(member.name).toLowerCase() === normalizedMemberName;
   });
   if (duplicate) {
     throw new Error(`A teammate named "${memberName}" is already in this session`);
@@ -169,10 +189,10 @@ function claim(session, body) {
   if (session.holder && session.holder.clientId !== body.clientId) {
     throw new Error(`${session.holder.name} is already using the keyboard`);
   }
-  session.holder = { clientId: body.clientId, name: name(body), since: Date.now() };
+  session.holder = { clientId: body.clientId, name: memberName(session, body), since: Date.now() };
   session.pendingRequest = null;
   const actionNote = note(body);
-  event(session, body, withNote("claimed the keyboard", actionNote), withNote(`${name(body)} claimed the keyboard`, actionNote));
+  event(session, body, withNote("claimed the keyboard", actionNote), withNote(`${memberName(session, body)} claimed the keyboard`, actionNote));
 }
 
 function release(session, body) {
@@ -181,7 +201,7 @@ function release(session, body) {
   clearPendingRequest(session);
   const heldFor = clearHolder(session);
   const actionNote = note(body);
-  event(session, body, withNote("released the keyboard", actionNote), withNote(`${name(body)} released the keyboard`, actionNote), heldFor);
+  event(session, body, withNote("released the keyboard", actionNote), withNote(`${memberName(session, body)} released the keyboard`, actionNote), heldFor);
 }
 
 function requestKeyboard(session, body) {
@@ -191,16 +211,16 @@ function requestKeyboard(session, body) {
   session.pendingRequest = {
     id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
     clientId: String(body.clientId),
-    name: name(body),
+    name: memberName(session, body),
     note: actionNote,
     requestedAt: Date.now(),
     expiresAt: Date.now() + 10000,
   };
-  event(session, body, withNote("requested the keyboard", actionNote), withNote(`${name(body)} requested the keyboard`, actionNote));
+  event(session, body, withNote("requested the keyboard", actionNote), withNote(`${memberName(session, body)} requested the keyboard`, actionNote));
 }
 
 function leave(session, body, context = {}) {
-  const memberName = session.members[body.clientId]?.name || name(body);
+  const currentName = session.members[body.clientId]?.name || memberName(session, body);
   const wasHolder = session.holder?.clientId === body.clientId;
   if (wasHolder) clearPendingRequest(session);
   const heldFor = wasHolder ? clearHolder(session) : 0;
@@ -209,15 +229,15 @@ function leave(session, body, context = {}) {
   const kickedBy = context.kickedByName;
   if (wasHolder) {
     const text = kickedBy ? `was kicked by ${kickedBy} and released the keyboard` : "left and released the keyboard";
-    const message = kickedBy ? `${memberName} was kicked by ${kickedBy} and released the keyboard` : `${memberName} left and released the keyboard`;
-    event(session, { ...body, name: memberName }, text, message, heldFor);
+    const message = kickedBy ? `${currentName} was kicked by ${kickedBy} and released the keyboard` : `${currentName} left and released the keyboard`;
+    event(session, { ...body, name: currentName }, text, message, heldFor);
     return;
   }
   if (kickedBy) {
-    event(session, { ...body, name: memberName }, `was kicked by ${kickedBy}`, `${memberName} was kicked by ${kickedBy}`);
+    event(session, { ...body, name: currentName }, `was kicked by ${kickedBy}`, `${currentName} was kicked by ${kickedBy}`);
     return;
   }
-  event(session, { ...body, name: memberName }, "left the session", `${memberName} left the session`);
+  event(session, { ...body, name: currentName }, "left the session", `${currentName} left the session`);
 }
 
 function kick(session, body) {
@@ -226,7 +246,7 @@ function kick(session, body) {
   const target = session.members[targetClientId];
   if (!target) throw new Error("Teammate is no longer in this session");
   session.removedClients[targetClientId] = Date.now();
-  leave(session, { ...body, clientId: targetClientId, name: target.name }, { kickedByName: name(body) });
+  leave(session, { ...body, clientId: targetClientId, name: target.name }, { kickedByName: memberName(session, body) });
 }
 
 function isSessionEmpty(session) {
@@ -245,7 +265,7 @@ function acceptRequest(session, body) {
   if (!session.holder || session.holder.clientId !== body.clientId) throw new Error("Only the holder can accept requests");
   const requester = session.pendingRequest;
   const heldFor = Date.now() - session.holder.since;
-  event(session, body, `gave the keyboard to ${requester.name}`, `${name(body)} gave the keyboard to ${requester.name}`, heldFor);
+  event(session, body, `gave the keyboard to ${requester.name}`, `${memberName(session, body)} gave the keyboard to ${requester.name}`, heldFor);
   session.holder = { clientId: requester.clientId, name: requester.name, since: Date.now() };
   session.pendingRequest = null;
 }
@@ -256,7 +276,7 @@ function rejectRequest(session, body) {
   if (!session.holder || session.holder.clientId !== body.clientId) throw new Error("Only the holder can reject requests");
   const requester = session.pendingRequest;
   session.pendingRequest = null;
-  event(session, body, `rejected ${requester.name}'s request`, `${name(body)} rejected ${requester.name}'s request`);
+  event(session, body, `rejected ${requester.name}'s request`, `${memberName(session, body)} rejected ${requester.name}'s request`);
 }
 
 function expireRequest(session) {
@@ -288,13 +308,16 @@ function settings(session, body) {
     session.runningSince = null;
     session.timerRunning = false;
   }
-  event(session, body, "updated settings", `${name(body)} updated settings`);
+  event(session, body, "updated settings", `${memberName(session, body)} updated settings`);
   if (durationChanged && hadRelativeClock) session.clockMode = "local";
 }
 
 function touch(session, body) {
-  const clientId = ensureClientId(body);
-  session.members[clientId] = { name: name(body), seenAt: Date.now() };
+  const clientId = parseClientId(body.clientId);
+  const existing = session.members[clientId];
+  const authKey = parseClientKey(body.clientKey);
+  const nextName = existing?.name || parseName(body.name);
+  session.members[clientId] = attachMemberAuth({ name: nextName, seenAt: Date.now() }, authKey);
   session.lastActivityAt = Date.now();
 }
 
@@ -305,7 +328,7 @@ function event(session, body, text, message, durationMs = 0) {
     id: `${now}-${Math.random().toString(16).slice(2)}`,
     time: now,
     clientId: String(body.clientId || ""),
-    name: name(body),
+    name: memberName(session, body),
     text,
     message,
     durationMs,
@@ -331,10 +354,14 @@ function backfillEventTiming(session) {
   }
 }
 
-function ensureClientId(body) {
-  const clientId = String(body.clientId || "").trim();
-  if (!clientId) throw new Error("Missing client id");
-  return clientId;
+function ensureJoinAllowed(session, body) {
+  const clientId = parseClientId(body.clientId);
+  const authKey = parseClientKey(body.clientKey);
+  const existing = session.members[clientId];
+  if (existing && existing.authKey && existing.authKey !== authKey) {
+    throw new Error("Session access denied");
+  }
+  return { clientId, authKey };
 }
 
 function clearHolder(session) {
@@ -349,16 +376,6 @@ function clearPendingRequest(session, clientId = "") {
   if (!clientId || session.pendingRequest.clientId === clientId || session.holder?.clientId === clientId) {
     session.pendingRequest = null;
   }
-}
-
-function name(body) {
-  const value = String(body.name || "").trim().slice(0, 32);
-  if (!value) throw new Error("Missing name");
-  return value;
-}
-
-function normalizeName(value) {
-  return String(value || "").trim().toLowerCase();
 }
 
 function note(body) {
@@ -381,6 +398,32 @@ function cleanCode(code) {
 function clampDuration(value) {
   const ms = Number(value) || 5 * 60 * 60 * 1000;
   return Math.min(Math.max(ms, 15 * 60 * 1000), 24 * 60 * 60 * 1000);
+}
+
+function authorizeMember(session, body, options = {}) {
+  const clientId = parseClientId(body.clientId);
+  const authKey = parseClientKey(body.clientKey);
+  if (options.allowRemoved !== true && isRemovedClient(session, clientId)) {
+    throw new Error("You were removed from this session. Join again if needed.");
+  }
+  const member = session.members[clientId];
+  if (!member) {
+    if (options.allowMissingMembership) return { clientId, authKey, member: null };
+    throw new Error("Session access denied");
+  }
+  if (!member.authKey) {
+    member.authKey = authKey;
+  } else if (member.authKey !== authKey) {
+    throw new Error("Session access denied");
+  }
+  return { clientId, authKey, member };
+}
+
+function memberName(session, body) {
+  const clientId = String(body.clientId || "");
+  const stored = session.members?.[clientId]?.name;
+  if (stored) return stored;
+  return parseName(body.name);
 }
 
 function uniqueCode() {

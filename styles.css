@@ -535,6 +535,11 @@ details summary::-webkit-details-marker {
   font-size: 0.82rem;
 }
 
+.setting-row output {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
 .check {
   display: flex;
   gap: 10px;

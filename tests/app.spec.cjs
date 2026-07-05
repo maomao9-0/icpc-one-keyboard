@@ -1,4 +1,15 @@
 const { test, expect } = require("@playwright/test");
+const crypto = require("node:crypto");
+
+const clientKeys = new Map();
+
+function clientKeyFor(clientId) {
+  const key = String(clientId || "");
+  if (!clientKeys.has(key)) {
+    clientKeys.set(key, crypto.createHash("sha256").update(`test-client:${key}`).digest("hex").slice(0, 32));
+  }
+  return clientKeys.get(key);
+}
 
 async function createSession(page, name = "Alice") {
   await page.goto("/");
@@ -9,19 +20,34 @@ async function createSession(page, name = "Alice") {
 }
 
 async function sessionPost(page, body) {
-  const res = await page.request.post("/api/session", { data: body });
+  const payload = { ...body };
+  if (payload.clientId && !payload.clientKey) payload.clientKey = clientKeyFor(payload.clientId);
+  const res = await page.request.post("/api/session", { data: payload });
   expect(res.ok()).toBeTruthy();
   return res.json();
 }
 
 async function sessionGet(page, params) {
-  const res = await page.request.get(`/api/session?${new URLSearchParams(params)}`);
+  const query = { ...params };
+  if (query.clientId && !query.clientKey) {
+    try {
+      const client = await page.evaluate(() => ({
+        clientId: localStorage.getItem("clientId"),
+        clientKey: localStorage.getItem("clientKey"),
+      }));
+      if (client.clientId === query.clientId && client.clientKey) query.clientKey = client.clientKey;
+    } catch {}
+  }
+  if (query.clientId && !query.clientKey) query.clientKey = clientKeyFor(query.clientId);
+  const res = await page.request.get(`/api/session?${new URLSearchParams(query)}`);
   expect(res.ok()).toBeTruthy();
   return res.json();
 }
 
 async function expectBadPost(page, body, message) {
-  const res = await page.request.post("/api/session", { data: body });
+  const payload = { ...body };
+  if (payload.clientId && !payload.clientKey) payload.clientKey = clientKeyFor(payload.clientId);
+  const res = await page.request.post("/api/session", { data: payload });
   expect(res.ok()).toBeFalsy();
   const data = await res.json();
   expect(data.error).toContain(message);
@@ -33,7 +59,11 @@ function eventByMessage(session, fragment) {
 
 function callSessionHandler(handler, { method = "POST", query = {}, body = {} }) {
   return new Promise((resolve) => {
-    const req = { method, query, body };
+    const nextQuery = { ...query };
+    const nextBody = { ...body };
+    if (nextQuery.clientId && !nextQuery.clientKey) nextQuery.clientKey = clientKeyFor(nextQuery.clientId);
+    if (nextBody.clientId && !nextBody.clientKey) nextBody.clientKey = clientKeyFor(nextBody.clientId);
+    const req = { method, query: nextQuery, body: nextBody };
     const res = {
       statusCode: 200,
       headers: {},
@@ -236,6 +266,48 @@ test("join rejects a duplicate teammate name", async ({ browser, page }) => {
   await bob.close();
 });
 
+test("client-side settings tampering cannot rename the current member", async ({ page }) => {
+  const code = await createSession(page, "Alice");
+  const client = await page.evaluate(() => ({
+    clientId: localStorage.getItem("clientId"),
+    clientKey: localStorage.getItem("clientKey"),
+  }));
+
+  const tampered = await page.evaluate(async ({ code, clientId, clientKey }) => {
+    const res = await fetch("/api/session", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        action: "settings",
+        code,
+        clientId,
+        clientKey,
+        name: "Mallory",
+        durationMs: 5 * 60 * 60 * 1000,
+      }),
+    });
+    return res.json();
+  }, { code, ...client });
+
+  expect(tampered.session.members[client.clientId].name).toBe("Alice");
+  expect(tampered.session.events.at(-1).message).toContain("Alice updated settings");
+  await expect(page.locator(".topbar")).toContainText("Alice");
+});
+
+test("server rejects spoofing another member with a mismatched client key", async ({ page }) => {
+  const created = await sessionPost(page, { action: "create", clientId: "owner-1234", name: "Owner", durationMs: 5 * 60 * 60 * 1000 });
+  const code = created.code;
+  await sessionPost(page, { action: "join", code, clientId: "guest-1234", name: "Guest" });
+
+  await expectBadPost(page, {
+    action: "kick",
+    code,
+    clientId: "owner-1234",
+    clientKey: clientKeyFor("attacker-9999"),
+    targetClientId: "guest-1234",
+  }, "Session access denied");
+});
+
 test("requesting from a holder notifies the holder and does not steal the keyboard", async ({ browser }) => {
   const aliceContext = await browser.newContext({ permissions: ["notifications"] });
   const bobContext = await browser.newContext({ permissions: ["notifications"] });
@@ -396,8 +468,8 @@ test("three users cannot concurrently claim or release another holder", async ({
     await expect(page.locator(".holder")).toHaveText("Alice");
   }
 
-  await expectBadPost(bob, { action: "claim", code, clientId: "bob-api", name: "Bob" }, "Alice is already using the keyboard");
-  await expectBadPost(charlie, { action: "release", code, clientId: "charlie-api", name: "Charlie" }, "Only the holder can release");
+  await expectBadPost(bob, { action: "claim", code, clientId: "bob-api", name: "Bob" }, "Session access denied");
+  await expectBadPost(charlie, { action: "release", code, clientId: "charlie-api", name: "Charlie" }, "Session access denied");
   await expect(alice.locator(".holder")).toHaveText("Alice");
 
   await alice.getByRole("button", { name: "Release keyboard" }).click();
@@ -448,7 +520,7 @@ test("any teammate can kick a stuck holder through the existing leave cleanup", 
   await expect(owner.locator(".members")).not.toContainText("Bob", { timeout: 5000 });
   await expect(owner.locator("[data-audit-log] summary")).toContainText("Bob was kicked by Owner and released the keyboard");
   await expect(bob.getByRole("button", { name: "Create Session" })).toBeVisible({ timeout: 5000 });
-  await expect(bob.locator(".toast")).toContainText("You were removed from the session");
+  await expect(bob.locator(".toast")).toContainText("You were removed from this session");
 
   await ownerContext.close();
   await bobContext.close();
@@ -580,7 +652,11 @@ test("closing an active page asks for confirmation and removes the holder from t
   await expect(bob.locator(".holder")).toHaveText("Unused", { timeout: 5000 });
   await expect(bob.locator(".members")).not.toContainText("Alice", { timeout: 5000 });
 
-  const session = await sessionGet(bob, { code, clientId: "bob-check", name: "Bob" });
+  const bobClient = await bob.evaluate(() => ({
+    clientId: localStorage.getItem("clientId"),
+    clientKey: localStorage.getItem("clientKey"),
+  }));
+  const session = await sessionGet(bob, { code, ...bobClient });
   expect(session.session.holder).toBeNull();
   expect(Object.values(session.session.members).map((member) => member.name)).not.toContain("Alice");
   expect(session.session.events.at(-1).message).toContain("left and released the keyboard");
@@ -598,22 +674,22 @@ test("timer settings do not steal focus while countdown updates", async ({ page 
   await expect(page.locator("[data-timer]")).not.toHaveText("--:--:--");
 
   await page.getByRole("button", { name: "Settings" }).click();
-  await page.locator('input[name="name"]').click();
+  await page.locator('input[name="hours"]').click();
   await page.evaluate(() => {
     window.__settingsModal = document.querySelector(".modal");
-    window.__settingsName = document.querySelector('.settings input[name="name"]');
+    window.__settingsHours = document.querySelector('.settings input[name="hours"]');
   });
   await page.keyboard.press(process.platform === "darwin" ? "Meta+A" : "Control+A");
-  await page.keyboard.type("Alice Timer");
+  await page.keyboard.type("4");
   await page.waitForTimeout(1800);
-  await expect(page.locator('input[name="name"]')).toHaveValue("Alice Timer");
-  await expect(page.locator('input[name="name"]')).toBeFocused();
+  await expect(page.locator('input[name="hours"]')).toHaveValue("4");
+  await expect(page.locator('input[name="hours"]')).toBeFocused();
   const stable = await page.evaluate(() => ({
     sameModal: window.__settingsModal === document.querySelector(".modal"),
-    sameName: window.__settingsName === document.querySelector('.settings input[name="name"]'),
+    sameHours: window.__settingsHours === document.querySelector('.settings input[name="hours"]'),
   }));
   expect(stable.sameModal).toBe(true);
-  expect(stable.sameName).toBe(true);
+  expect(stable.sameHours).toBe(true);
 });
 
 test("poll failure does not send the user back to the homepage", async ({ page }) => {
@@ -670,13 +746,12 @@ test("direct join link pre-fills the code and lets a teammate join", async ({ pa
 test("settings save updates name and timer without stale sync warnings", async ({ page }) => {
   await createSession(page);
   await page.getByRole("button", { name: "Settings" }).click();
-  await page.locator('.settings input[name="name"]').fill("Alice Updated");
   await page.locator('input[name="hours"]').fill("4");
   await page.locator('input[name="minutes"]').fill("30");
   await page.locator('input[name="seconds"]').fill("15");
   await page.getByRole("button", { name: "Save settings" }).click();
 
-  await expect(page.getByText("Signed in as Alice Updated")).toBeVisible();
+  await expect(page.getByText("Signed in as Alice")).toBeVisible();
   await expect(page.locator("[data-timer]")).toHaveText("4:30:15");
   await expect(page.locator(".error")).toHaveCount(0);
 });
@@ -837,21 +912,25 @@ test("pause freezes contest elapsed time and resume restarts from the same audit
 
 test("audit rows keep their original local or relative labels across start reset and restart", async ({ page }) => {
   const code = await createSession(page);
-  const claimed = await sessionPost(page, { action: "claim", code, clientId: "owner", name: "Alice" });
+  const owner = await page.evaluate(() => ({
+    clientId: localStorage.getItem("clientId"),
+    clientKey: localStorage.getItem("clientKey"),
+  }));
+  const claimed = await sessionPost(page, { action: "claim", code, ...owner, name: "Alice" });
   expect(eventByMessage(claimed.session, "claimed the keyboard").timestampMode).toBe("local");
 
-  await sessionPost(page, { action: "timer", command: "start", code, clientId: "owner", name: "Alice" });
+  await sessionPost(page, { action: "timer", command: "start", code, ...owner, name: "Alice" });
   await sleep(1400);
   const firstRelative = await sessionPost(page, { action: "join", code, clientId: "bob-cycle", name: "Bob Cycle" });
   const bobEvent = eventByMessage(firstRelative.session, "Bob Cycle joined");
   expect(bobEvent.timestampMode).toBe("relative");
 
-  await sessionPost(page, { action: "timer", command: "reset", code, clientId: "owner", name: "Alice" });
+  await sessionPost(page, { action: "timer", command: "reset", code, ...owner, name: "Alice" });
   const localAfterReset = await sessionPost(page, { action: "join", code, clientId: "charlie-cycle", name: "Charlie Cycle" });
   const charlieEvent = eventByMessage(localAfterReset.session, "Charlie Cycle joined");
   expect(charlieEvent.timestampMode).toBe("local");
 
-  await sessionPost(page, { action: "timer", command: "start", code, clientId: "owner", name: "Alice" });
+  await sessionPost(page, { action: "timer", command: "start", code, ...owner, name: "Alice" });
   await sleep(1400);
   const secondRelative = await sessionPost(page, { action: "join", code, clientId: "dana-cycle", name: "Dana Cycle" });
   const danaEvent = eventByMessage(secondRelative.session, "Dana Cycle joined");
