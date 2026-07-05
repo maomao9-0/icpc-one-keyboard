@@ -414,7 +414,7 @@ function settingsView() {
           <button class="btn ghost" type="button" data-action="close-settings">Close</button>
         </div>
         <form class="settings" data-form="save-settings">
-          <label class="setting-row"><span>Name</span><input name="name" value="${esc(state.identity.name)}" autocomplete="name" required></label>
+          <label class="setting-row"><span>Name</span><input name="name" value="${esc(state.identity.name)}" readonly></label>
           <label class="setting-row"><span>Join link</span><input name="link" value="${esc(link)}" readonly></label>
           <div class="split">
             <button class="btn ghost" type="button" data-action="copy-code">Copy Code</button>
