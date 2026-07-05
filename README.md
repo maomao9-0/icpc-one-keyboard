@@ -72,6 +72,11 @@ No environment variables or database setup are required.
 
 - `index.html`: app shell
 - `styles.css`: minimal monochrome interface
-- `app.js`: frontend state, rendering, polling, notifications
+- `app/`: frontend modules
+- `app/main.js`: bootstrap, network calls, event wiring
+- `app/state.js`: shared state and constants
+- `app/helpers.js`: pure formatting, session, and collection helpers
+- `app/views.js`: UI templates for the join screen, session screen, and modals
+- `app/live.js`: timer, request countdown, and member presence live updates
 - `api/session.js`: ephemeral session API
 - `vercel.json`: Vercel config
