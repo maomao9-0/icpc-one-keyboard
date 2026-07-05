@@ -540,6 +540,48 @@ details summary::-webkit-details-marker {
   overflow-wrap: anywhere;
 }
 
+.setting-value {
+  min-width: 0;
+  padding: 0.78rem 0.92rem;
+  border: 1px solid rgba(24, 23, 19, 0.18);
+  background: linear-gradient(180deg, rgba(255, 252, 244, 0.88), rgba(245, 239, 228, 0.76));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+  font-size: 0.95rem;
+  line-height: 1.45;
+}
+
+.setting-value-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 44px;
+  gap: 10px;
+  align-items: start;
+}
+
+.setting-copy-btn {
+  width: 44px;
+  height: 44px;
+  min-height: 44px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  align-self: stretch;
+  background: linear-gradient(180deg, rgba(255, 252, 244, 0.94), rgba(239, 232, 219, 0.84));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
+  transition: transform 160ms ease, background-color 160ms ease, box-shadow 160ms ease;
+}
+
+.setting-copy-btn:hover {
+  transform: translateY(-1px);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.72),
+    0 10px 24px rgba(24, 23, 19, 0.08);
+}
+
+.setting-copy-btn:active {
+  transform: translateY(0);
+}
+
 .check {
   display: flex;
   gap: 10px;
@@ -618,6 +660,17 @@ details summary::-webkit-details-marker {
   font-family: Georgia, "Times New Roman", serif;
   font-size: 2.2rem;
   letter-spacing: -0.05em;
+}
+
+@media (max-width: 560px) {
+  .setting-value-row {
+    grid-template-columns: 1fr;
+  }
+
+  .setting-copy-btn {
+    width: 100%;
+    min-height: 48px;
+  }
 }
 
 .toast {

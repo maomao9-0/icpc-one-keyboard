@@ -126,11 +126,18 @@ function settingsView() {
           <button class="btn ghost" type="button" data-action="close-settings">Close</button>
         </div>
         <form class="settings" data-form="save-settings">
-          <div class="setting-row"><span>Name</span><output>${esc(state.identity.name)}</output></div>
-          <div class="setting-row"><span>Join link</span><output>${esc(link)}</output></div>
-          <div class="split">
-            <button class="btn ghost" type="button" data-action="copy-code">Copy Code</button>
-            <button class="btn ghost" type="button" data-action="copy-link">Copy Link</button>
+          <div class="setting-row">
+            <span>Name</span>
+            <output class="setting-value">${esc(state.identity.name)}</output>
+          </div>
+          <div class="setting-row">
+            <span>Join link</span>
+            <div class="setting-value-row">
+              <output class="setting-value">${esc(link)}</output>
+              <button class="btn setting-copy-btn" type="button" data-action="copy-link" aria-label="Copy join link" title="Copy join link">
+                ${copyIcon()}
+              </button>
+            </div>
           </div>
           <div class="setting-row">
             <span>Duration</span>
@@ -288,6 +295,17 @@ function settingsIcon() {
       <circle cx="16" cy="6" r="2.25" fill="var(--paper)" stroke="currentColor" stroke-width="1.8"/>
       <circle cx="9" cy="12" r="2.25" fill="var(--paper)" stroke="currentColor" stroke-width="1.8"/>
       <circle cx="8" cy="18" r="2.25" fill="var(--paper)" stroke="currentColor" stroke-width="1.8"/>
+    </svg>
+  `;
+}
+
+function copyIcon() {
+  return `
+    <svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18">
+      <g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="9" y="9" width="10" height="10" rx="1.8"/>
+        <path d="M15 9V7.4c0-.9-.7-1.6-1.6-1.6H7.4c-.9 0-1.6.7-1.6 1.6v6c0 .9.7 1.6 1.6 1.6H9"/>
+      </g>
     </svg>
   `;
 }

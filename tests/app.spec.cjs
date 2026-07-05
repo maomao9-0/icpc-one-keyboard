@@ -756,13 +756,12 @@ test("settings save updates name and timer without stale sync warnings", async (
   await expect(page.locator(".error")).toHaveCount(0);
 });
 
-test("settings copy buttons write session code and join link to clipboard", async ({ page }) => {
+test("settings copy icon writes the join link to clipboard", async ({ page }) => {
   const code = await createSession(page);
   await page.getByRole("button", { name: "Settings" }).click();
-  await page.getByRole("button", { name: "Copy Code" }).click();
-  await expect(page.locator(".toast")).toContainText("Code copied.");
-  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(code);
-  await page.getByRole("button", { name: "Copy Link" }).click();
+  await expect(page.getByRole("button", { name: "Copy Code" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Copy Link" })).toHaveCount(0);
+  await page.getByRole("button", { name: "Copy join link" }).click();
   await expect(page.locator(".toast")).toContainText("Link copied.");
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toContain(`?code=${code}`);
   await expect(page.locator(".toast")).toHaveCount(0, { timeout: 5000 });

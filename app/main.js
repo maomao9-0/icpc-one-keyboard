@@ -270,7 +270,6 @@ document.addEventListener("click", async (event) => {
     render();
     return;
   }
-  if (action === "copy-code") copyText(state.identity.code, "Code copied.");
   if (action === "copy-link") copyText(`${location.origin}/?code=${state.identity.code}`, "Link copied.");
   if (action === "toggle-note") {
     state.ui.actionNoteOpen = !state.ui.actionNoteOpen;
