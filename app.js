@@ -104,6 +104,27 @@ function memberPresenceDeadline(seenAt, now = Date.now()) {
   return now + until + liveTickSafetyMs;
 }
 
+function sessionMemberEntries(session) {
+  return Object.entries(session?.members || {}).map(([clientId, member]) => ({
+    clientId,
+    name: member.name,
+    seenAt: Number(member.seenAt || 0),
+  }));
+}
+
+function teammateSort(left, right) {
+  return left.name.localeCompare(right.name, undefined, { sensitivity: "base" }) || left.clientId.localeCompare(right.clientId);
+}
+
+function memberPresence(member, now = Date.now()) {
+  const online = now - member.seenAt < memberPresenceMs;
+  return {
+    online,
+    text: online ? "online" : "idle",
+    deadline: online ? memberPresenceDeadline(member.seenAt, now) : Infinity,
+  };
+}
+
 function duration(ms = 0) {
   if (ms < 60000) return `${Math.max(1, Math.round(ms / 1000))}s`;
   const totalMinutes = Math.floor(ms / 60000);
@@ -486,17 +507,11 @@ function teammateRows(session) {
 }
 
 function teammateEntries(session) {
-  return Object.entries(session.members || {})
-    .map(([clientId, member]) => ({
-      clientId,
-      name: member.name,
-      seenAt: Number(member.seenAt || 0),
-    }))
-    .sort((a, b) => b.seenAt - a.seenAt);
+  return sessionMemberEntries(session).sort(teammateSort);
 }
 
 function teammateRow(member, session, now = Date.now()) {
-  const online = now - member.seenAt < memberPresenceMs;
+  const presence = memberPresence(member, now);
   const holder = session.holder?.clientId === member.clientId ? " holder-tag" : "";
   const self = member.clientId === state.identity.clientId;
   return `
@@ -510,7 +525,7 @@ function teammateRow(member, session, now = Date.now()) {
           : `
             <span class="member-tools">
               <button class="member-kick" type="button" data-action="kick-member" data-client-id="${esc(member.clientId)}">Kick</button>
-              <small data-member-status="${member.clientId}">${online ? "online" : "idle"}</small>
+              <small data-member-status="${member.clientId}">${presence.text}</small>
             </span>
           `
       }
@@ -892,9 +907,9 @@ function copyText(value, message) {
 
 function sessionFingerprint(session) {
   if (!session) return "";
-  const members = Object.entries(session.members || {})
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([clientId, member]) => ({ clientId, name: member.name }));
+  const members = sessionMemberEntries(session)
+    .sort((left, right) => left.clientId.localeCompare(right.clientId))
+    .map(({ clientId, name }) => ({ clientId, name }));
   const events = (session.events || []).map(({ id, time, clientId, name, text, message, durationMs, timestampMode, clockMs }) => ({
     id,
     time,
@@ -958,18 +973,13 @@ function renderMemberPresence(now) {
   if (!session) return null;
   const updates = [];
   let deadline = Infinity;
-  Object.entries(session.members || {})
-    .sort(([, left], [, right]) => Number(right.seenAt || 0) - Number(left.seenAt || 0))
-    .forEach(([clientId, member]) => {
-      const badge = document.querySelector(`[data-member-status="${clientId}"]`);
-      if (!badge) return;
-      const online = now - Number(member.seenAt || 0) < memberPresenceMs;
-      const text = online ? "online" : "idle";
-      updates.push({ key: `member-status:${clientId}`, el: badge, text });
-      if (online) {
-        deadline = Math.min(deadline, memberPresenceDeadline(member.seenAt, now));
-      }
-    });
+  teammateEntries(session).forEach((member) => {
+    const badge = document.querySelector(`[data-member-status="${member.clientId}"]`);
+    if (!badge) return;
+    const presence = memberPresence(member, now);
+    updates.push({ key: `member-status:${member.clientId}`, el: badge, text: presence.text });
+    deadline = Math.min(deadline, presence.deadline);
+  });
   if (!updates.length) return null;
   return { updates, deadline };
 }

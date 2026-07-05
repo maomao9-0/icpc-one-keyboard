@@ -726,6 +726,27 @@ test("teammate list stays compact and shows active members", async ({ browser })
   expect(metrics.overflowY).toBe("auto");
 });
 
+test("teammate list is sorted alphabetically", async ({ browser }) => {
+  const owner = await browser.newPage();
+  const zoe = await browser.newPage();
+  const amy = await browser.newPage();
+  const mike = await browser.newPage();
+  const code = await createSession(owner, "Owner");
+
+  for (const [page, name] of [[zoe, "Zoe"], [amy, "Amy"], [mike, "Mike"]]) {
+    await page.goto(`/?code=${code}`);
+    await page.locator('input[name="name"]').fill(name);
+    await page.getByRole("button", { name: "Join Session" }).click();
+    await expect(page.getByRole("button", { name: "Claim keyboard" })).toBeVisible();
+  }
+
+  await expect(owner.locator(".members .member")).toHaveCount(4, { timeout: 5000 });
+  const names = await owner.locator(".members .member > span:first-child").evaluateAll((nodes) =>
+    nodes.map((node) => node.textContent.trim()),
+  );
+  expect(names).toEqual(["Amy", "Mike", "Owner", "Zoe"]);
+});
+
 test("member presence badges move from online to idle without replacing the badge", async ({ browser }) => {
   const ownerContext = await browser.newContext();
   const bobContext = await browser.newContext();
