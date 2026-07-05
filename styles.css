@@ -389,14 +389,14 @@ textarea {
   font-size: 0.9rem;
 }
 
-.member span {
+.member > span:first-child {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--ink);
 }
 
-.member.self span {
+.member.self > span:first-child {
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -407,7 +407,15 @@ textarea {
   font-size: 0.72rem;
 }
 
-.member-leave {
+.member-tools {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.member-leave,
+.member-kick {
   border: 0;
   padding: 0;
   color: var(--danger);
@@ -419,12 +427,30 @@ textarea {
   text-underline-offset: 0.18em;
 }
 
-.member-leave:hover {
+.member-kick {
+  opacity: 0.62;
+  color: var(--muted);
+  text-decoration-color: rgba(109, 103, 92, 0.28);
+  transition: opacity 140ms ease, color 140ms ease;
+}
+
+.member:hover .member-kick,
+.member-kick:focus-visible {
+  opacity: 1;
+}
+
+.member-kick:hover {
+  color: var(--danger);
+  text-decoration-color: rgba(123, 33, 28, 0.4);
+}
+
+.member-leave:hover,
+.member-kick:hover {
   transform: none;
   background: transparent;
 }
 
-.holder-tag span::after {
+.holder-tag > span:first-child::after {
   content: " holding";
   color: var(--muted);
   font-family: "Courier New", monospace;
@@ -567,6 +593,14 @@ details summary::-webkit-details-marker {
   margin-top: 4px;
 }
 
+.kick-card {
+  width: min(560px, 100%);
+  background:
+    linear-gradient(135deg, rgba(255, 252, 244, 0.95), rgba(245, 241, 232, 0.94)),
+    var(--panel);
+  box-shadow: 0 30px 90px rgba(24, 23, 19, 0.18);
+}
+
 .modal-head {
   display: flex;
   justify-content: space-between;
@@ -652,6 +686,17 @@ details summary::-webkit-details-marker {
 
   .btn:hover {
     transform: none;
+  }
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .member-kick {
+    opacity: 0;
+  }
+
+  .member:hover .member-kick,
+  .member-kick:focus-visible {
+    opacity: 1;
   }
 }
 

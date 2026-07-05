@@ -8,7 +8,7 @@ const timeFormatter = new Intl.DateTimeFormat(undefined, {
 });
 const liveTickSafetyMs = 20;
 const requestExpiryRefreshDelayMs = 150;
-const memberPresenceMs = 60 * 1000;
+const memberPresenceMs = 10 * 1000;
 
 const state = {
   identity: {
@@ -37,6 +37,7 @@ const state = {
     actionNote: "",
     actionNoteOpen: false,
     leaveOpen: false,
+    kickTarget: null,
     toast: "",
   },
 };
@@ -161,13 +162,14 @@ async function poll() {
     const hadIssue = Boolean(state.network.syncIssue);
     state.network.syncIssue = "";
     const changed = setSession(data.session);
+    if (state.session && !isCurrentMember()) {
+      resetToHome();
+      toast("You were removed from the session. Join again if needed.", false, true);
+      return;
+    }
     if ((changed || hadIssue) && !editingModal()) render();
   } catch (err) {
     const issue = err.message || "Could not sync session";
-    if (issue === "Session not found" && state.session) {
-      resetToHome();
-      return;
-    }
     if (state.network.syncIssue !== issue) {
       state.network.syncIssue = issue;
       if (!editingModal()) render();
@@ -260,6 +262,7 @@ function resetToHome() {
   state.ui.actionNote = "";
   state.ui.actionNoteOpen = false;
   state.ui.leaveOpen = false;
+  state.ui.kickTarget = null;
   state.lifecycle.leaveSent = false;
   history.replaceState(null, "", "/");
   render();
@@ -364,6 +367,7 @@ function mainView() {
     </section>
     ${requestPopup(s)}
     ${state.ui.leaveOpen ? leaveView() : ""}
+    ${state.ui.kickTarget ? kickView() : ""}
     ${state.ui.settingsOpen ? settingsView() : ""}
   `;
 }
@@ -436,6 +440,29 @@ function leaveView() {
   `;
 }
 
+function kickView() {
+  const target = state.ui.kickTarget;
+  return `
+    <div class="modal kick-modal" data-action="close-kick">
+      <section class="panel modal-card kick-card" role="dialog" aria-modal="true" aria-label="Kick teammate" data-stop>
+        <div class="modal-head leave-head">
+          <div>
+            <p class="label">Recovery action</p>
+            <h2>Kick ${esc(target.name)}?</h2>
+          </div>
+        </div>
+        <p class="leave-copy">
+          This removes <strong>${esc(target.name)}</strong> from <strong>${esc(state.session.code)}</strong>.
+        </p>
+        <div class="split">
+          <button class="btn ghost" type="button" data-action="close-kick">Cancel</button>
+          <button class="btn primary danger" type="button" data-action="confirm-kick">Kick teammate</button>
+        </div>
+      </section>
+    </div>
+  `;
+}
+
 function settingsIcon() {
   return `
     <svg aria-hidden="true" viewBox="0 0 24 24" width="20" height="20">
@@ -480,10 +507,19 @@ function teammateRow(member, session, now = Date.now()) {
       ${
         self
           ? '<button class="member-leave" type="button" data-action="leave-session">Leave</button>'
-          : `<small data-member-status="${member.clientId}">${online ? "online" : "idle"}</small>`
+          : `
+            <span class="member-tools">
+              <button class="member-kick" type="button" data-action="kick-member" data-client-id="${esc(member.clientId)}">Kick</button>
+              <small data-member-status="${member.clientId}">${online ? "online" : "idle"}</small>
+            </span>
+          `
       }
     </div>
   `;
+}
+
+function isCurrentMember(session = state.session) {
+  return Boolean(session?.members?.[state.identity.clientId]);
 }
 
 function requestPopup(session) {
@@ -718,6 +754,22 @@ document.addEventListener("click", async (event) => {
     render();
     return;
   }
+  if (action === "kick-member") {
+    const clientId = actionNode.dataset.clientId;
+    const target = teammateEntries(state.session).find((member) => member.clientId === clientId);
+    if (!target) {
+      toast("That teammate is no longer in the session.", true);
+      return;
+    }
+    state.ui.kickTarget = target;
+    render();
+    return;
+  }
+  if (action === "close-kick") {
+    state.ui.kickTarget = null;
+    render();
+    return;
+  }
   if (action === "copy-code") copyText(state.identity.code, "Code copied.");
   if (action === "copy-link") copyText(`${location.origin}/?code=${state.identity.code}`, "Link copied.");
   if (action === "toggle-note") {
@@ -756,6 +808,21 @@ document.addEventListener("click", async (event) => {
     const payload = leavePayload();
     if (payload) {
       await call(payload);
+    }
+    return;
+  }
+  if (action === "confirm-kick") {
+    const target = state.ui.kickTarget;
+    state.ui.kickTarget = null;
+    render();
+    if (target) {
+      await call({
+        action: "kick",
+        code: state.identity.code,
+        clientId: state.identity.clientId,
+        name: state.identity.name,
+        targetClientId: target.clientId,
+      });
     }
     return;
   }

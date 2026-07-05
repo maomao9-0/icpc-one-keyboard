@@ -31,6 +31,27 @@ function eventByMessage(session, fragment) {
   return session.events.find((event) => event.message.includes(fragment));
 }
 
+function callSessionHandler(handler, { method = "POST", query = {}, body = {} }) {
+  return new Promise((resolve) => {
+    const req = { method, query, body };
+    const res = {
+      statusCode: 200,
+      headers: {},
+      setHeader(name, value) {
+        this.headers[name.toLowerCase()] = value;
+      },
+      status(code) {
+        this.statusCode = code;
+        return this;
+      },
+      json(data) {
+        resolve({ status: this.statusCode, data });
+      },
+    };
+    handler(req, res);
+  });
+}
+
 async function sleep(ms) {
   await new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -403,6 +424,53 @@ test("leave action removes the teammate and force releases the keyboard", async 
   expect(left.session.events.at(-1).message).toContain("left and released the keyboard");
 });
 
+test("any teammate can kick a stuck holder through the existing leave cleanup", async ({ browser }) => {
+  const ownerContext = await browser.newContext();
+  const bobContext = await browser.newContext();
+  const owner = await ownerContext.newPage();
+  const bob = await bobContext.newPage();
+
+  const code = await createSession(owner, "Owner");
+  await bob.goto(`/?code=${code}`);
+  await bob.locator('input[name="name"]').fill("Bob");
+  await bob.getByRole("button", { name: "Join Session" }).click();
+  await expect(owner.locator(".members")).toContainText("Bob", { timeout: 5000 });
+
+  await bob.getByRole("button", { name: "Claim keyboard" }).click();
+  await expect(owner.locator(".holder")).toHaveText("Bob", { timeout: 5000 });
+
+  const bobClientId = await bob.evaluate(() => localStorage.getItem("clientId"));
+  await owner.locator(`[data-client-id="${bobClientId}"]`).click({ force: true });
+  await expect(owner.getByRole("dialog", { name: "Kick teammate" })).toBeVisible();
+  await owner.getByRole("button", { name: "Kick teammate" }).click();
+
+  await expect(owner.locator(".holder")).toHaveText("Unused");
+  await expect(owner.locator(".members")).not.toContainText("Bob", { timeout: 5000 });
+  await expect(owner.locator("[data-audit-log] summary")).toContainText("Bob was kicked by Owner and released the keyboard");
+  await expect(bob.getByRole("button", { name: "Create Session" })).toBeVisible({ timeout: 5000 });
+  await expect(bob.locator(".toast")).toContainText("You were removed from the session");
+
+  await ownerContext.close();
+  await bobContext.close();
+});
+
+test("kicking a pending requester clears the pending request", async ({ page }) => {
+  const created = await sessionPost(page, { action: "create", clientId: "owner", name: "Owner", durationMs: 5 * 60 * 60 * 1000 });
+  const code = created.code;
+  await sessionPost(page, { action: "claim", code, clientId: "owner", name: "Owner" });
+  await sessionPost(page, { action: "join", code, clientId: "guest", name: "Guest" });
+  await sessionPost(page, { action: "request", code, clientId: "guest", name: "Guest" });
+
+  const kicked = await sessionPost(page, { action: "kick", code, clientId: "owner", name: "Owner", targetClientId: "guest" });
+  expect(kicked.session.pendingRequest).toBeNull();
+  expect(kicked.session.members.guest).toBeUndefined();
+  expect(kicked.session.events.at(-1).message).toContain("Guest was kicked by Owner");
+
+  await expectBadPost(page, { action: "request", code, clientId: "guest", name: "Guest" }, "You were removed from this session");
+  const rejoined = await sessionPost(page, { action: "join", code, clientId: "guest", name: "Guest" });
+  expect(rejoined.session.members.guest.name).toBe("Guest");
+});
+
 test("last member leaving deletes the session", async ({ page }) => {
   const created = await sessionPost(page, { action: "create", clientId: "owner", name: "Owner", durationMs: 5 * 60 * 60 * 1000 });
   const code = created.code;
@@ -412,6 +480,40 @@ test("last member leaving deletes the session", async ({ page }) => {
   const lookup = await page.request.get(`/api/session?${new URLSearchParams({ code, clientId: "owner", name: "Owner" })}`);
   expect(lookup.ok()).toBeFalsy();
   expect(lookup.status()).toBe(404);
+});
+
+test("stale sessions are pruned after the configured inactivity window", async () => {
+  const previousStore = process.env.ONE_KEYBOARD_STORE;
+  const previousStale = process.env.ONE_KEYBOARD_STALE_SESSION_MS;
+  const previousSessions = globalThis.__oneKeyboardSessions;
+  const modulePath = require.resolve("../api/session.js");
+
+  try {
+    process.env.ONE_KEYBOARD_STORE = ":memory:";
+    process.env.ONE_KEYBOARD_STALE_SESSION_MS = "20";
+    globalThis.__oneKeyboardSessions = new Map();
+    delete require.cache[modulePath];
+    const handler = require("../api/session.js");
+
+    const created = await callSessionHandler(handler, {
+      body: { action: "create", clientId: "owner", name: "Owner", durationMs: 5 * 60 * 60 * 1000 },
+    });
+    expect(created.status).toBe(200);
+
+    await sleep(35);
+    const lookup = await callSessionHandler(handler, {
+      method: "GET",
+      query: { code: created.data.code, clientId: "owner", name: "Owner" },
+    });
+    expect(lookup.status).toBe(404);
+  } finally {
+    delete require.cache[modulePath];
+    if (previousStore === undefined) delete process.env.ONE_KEYBOARD_STORE;
+    else process.env.ONE_KEYBOARD_STORE = previousStore;
+    if (previousStale === undefined) delete process.env.ONE_KEYBOARD_STALE_SESSION_MS;
+    else process.env.ONE_KEYBOARD_STALE_SESSION_MS = previousStale;
+    globalThis.__oneKeyboardSessions = previousSessions;
+  }
 });
 
 test("leaving from teammates removes the member for everyone else", async ({ browser }) => {
