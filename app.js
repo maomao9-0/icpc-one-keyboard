@@ -8,7 +8,7 @@ const timeFormatter = new Intl.DateTimeFormat(undefined, {
 });
 const liveTickSafetyMs = 20;
 const requestExpiryRefreshDelayMs = 150;
-const memberPresenceMs = 12000;
+const memberPresenceMs = 60 * 1000;
 
 const state = {
   identity: {
@@ -36,6 +36,7 @@ const state = {
     auditOpen: false,
     actionNote: "",
     actionNoteOpen: false,
+    leaveOpen: false,
     toast: "",
   },
 };
@@ -128,6 +129,10 @@ async function call(body) {
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || "Request failed");
     state.network.syncIssue = "";
+    if (body.action === "leave") {
+      resetToHome();
+      return data;
+    }
     setSession(data.session, data.code);
     return data;
   } catch (err) {
@@ -159,6 +164,10 @@ async function poll() {
     if ((changed || hadIssue) && !editingModal()) render();
   } catch (err) {
     const issue = err.message || "Could not sync session";
+    if (issue === "Session not found" && state.session) {
+      resetToHome();
+      return;
+    }
     if (state.network.syncIssue !== issue) {
       state.network.syncIssue = issue;
       if (!editingModal()) render();
@@ -240,6 +249,20 @@ function leavePayload() {
     clientId: state.identity.clientId,
     name: state.identity.name,
   };
+}
+
+function resetToHome() {
+  state.session = null;
+  state.sessionFingerprint = "";
+  state.identity.code = "";
+  state.ui.settingsOpen = false;
+  state.ui.auditOpen = false;
+  state.ui.actionNote = "";
+  state.ui.actionNoteOpen = false;
+  state.ui.leaveOpen = false;
+  state.lifecycle.leaveSent = false;
+  history.replaceState(null, "", "/");
+  render();
 }
 
 function sendLeave() {
@@ -331,13 +354,16 @@ function mainView() {
             <div class="log scroll-log">${logRows(s)}</div>
           </details>
         </section>
-        <section class="panel tile compact">
-          <p class="label">Teammates</p>
-          <div class="members">${memberRows(s)}</div>
+        <section class="panel tile compact teammates-card">
+          <div class="teammates-head">
+            <p class="label">TEAMMATES</p>
+          </div>
+          <div class="members">${teammateRows(s)}</div>
         </section>
       </aside>
     </section>
     ${requestPopup(s)}
+    ${state.ui.leaveOpen ? leaveView() : ""}
     ${state.ui.settingsOpen ? settingsView() : ""}
   `;
 }
@@ -385,6 +411,31 @@ function settingsView() {
   `;
 }
 
+function leaveView() {
+  const s = state.session;
+  const hasHold = Boolean(s?.holder?.clientId === state.identity.clientId);
+  return `
+    <div class="modal leave-modal" data-action="close-leave">
+      <section class="panel modal-card leave-card" role="dialog" aria-modal="true" aria-label="Leave session" data-stop>
+        <div class="modal-head leave-head">
+          <div>
+            <p class="label">Leave session</p>
+            <h2>Return to home?</h2>
+          </div>
+        </div>
+        <p class="leave-copy">
+          You will leave <strong>${esc(s.code)}</strong> and return to the create / join screen.
+          ${hasHold ? "The keyboard will be released for the rest of the team." : "Your presence will be removed from the session."}
+        </p>
+        <div class="split">
+          <button class="btn ghost" type="button" data-action="close-leave">Stay</button>
+          <button class="btn primary danger" type="button" data-action="confirm-leave">Leave session</button>
+        </div>
+      </section>
+    </div>
+  `;
+}
+
 function settingsIcon() {
   return `
     <svg aria-hidden="true" viewBox="0 0 24 24" width="20" height="20">
@@ -400,19 +451,39 @@ function settingsIcon() {
   `;
 }
 
-function memberRows(session) {
+function teammateRows(session) {
   const now = Date.now();
-  const members = Object.entries(session.members || {})
-    .map(([clientId, member]) => ({ clientId, ...member }))
-    .sort((a, b) => b.seenAt - a.seenAt);
+  const members = teammateEntries(session);
   if (!members.length) return `<div class="member muted">No teammates yet.</div>`;
-  return members
-    .map((member) => {
-      const online = now - member.seenAt < 12000;
-      const holder = session.holder?.clientId === member.clientId ? " holder-tag" : "";
-      return `<div class="member${holder}"><span>${esc(member.name)}</span><small data-member-status="${member.clientId}">${online ? "online" : "idle"}</small></div>`;
-    })
-    .join("");
+  return members.map((member) => teammateRow(member, session, now)).join("");
+}
+
+function teammateEntries(session) {
+  return Object.entries(session.members || {})
+    .map(([clientId, member]) => ({
+      clientId,
+      name: member.name,
+      seenAt: Number(member.seenAt || 0),
+    }))
+    .sort((a, b) => b.seenAt - a.seenAt);
+}
+
+function teammateRow(member, session, now = Date.now()) {
+  const online = now - member.seenAt < memberPresenceMs;
+  const holder = session.holder?.clientId === member.clientId ? " holder-tag" : "";
+  const self = member.clientId === state.identity.clientId;
+  return `
+    <div class="member${holder}${self ? " self" : ""}">
+      <span>
+        ${esc(member.name)}
+      </span>
+      ${
+        self
+          ? '<button class="member-leave" type="button" data-action="leave-session">Leave</button>'
+          : `<small data-member-status="${member.clientId}">${online ? "online" : "idle"}</small>`
+      }
+    </div>
+  `;
 }
 
 function requestPopup(session) {
@@ -637,6 +708,16 @@ document.addEventListener("click", async (event) => {
     render();
     return;
   }
+  if (action === "leave-session") {
+    state.ui.leaveOpen = true;
+    render();
+    return;
+  }
+  if (action === "close-leave") {
+    state.ui.leaveOpen = false;
+    render();
+    return;
+  }
   if (action === "copy-code") copyText(state.identity.code, "Code copied.");
   if (action === "copy-link") copyText(`${location.origin}/?code=${state.identity.code}`, "Link copied.");
   if (action === "toggle-note") {
@@ -668,6 +749,15 @@ document.addEventListener("click", async (event) => {
   }
   if (action === "request-reject") {
     await call({ action: "requestReject", code: state.identity.code, clientId: state.identity.clientId, name: state.identity.name });
+  }
+  if (action === "confirm-leave") {
+    state.ui.leaveOpen = false;
+    render();
+    const payload = leavePayload();
+    if (payload) {
+      await call(payload);
+    }
+    return;
   }
   if (action === "primary" && requireName()) {
     const next = primaryAction(state.session);

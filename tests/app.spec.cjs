@@ -166,6 +166,19 @@ test("claim and release update the status and audit log", async ({ page }) => {
   await expect(page.locator(".log")).toContainText('released the keyboard: "Handing off after fixing the parser"');
 });
 
+test("leaving a session returns the tab to the home page", async ({ page }) => {
+  await createSession(page);
+  await page.locator(".member.self").getByRole("button", { name: "Leave" }).click();
+  await expect(page.getByRole("dialog", { name: "Leave session" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Cancel" })).toHaveCount(0);
+  await page.getByRole("dialog", { name: "Leave session" }).getByRole("button", { name: "Leave session" }).click();
+  await expect(page.getByRole("button", { name: "Create Session" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Join Session" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Claim keyboard" })).toHaveCount(0);
+  await expect(page.locator('input[name="code"]')).toHaveValue("");
+  await expect(page).toHaveURL(/\/$/);
+});
+
 test("two teammates see claims and requests through polling", async ({ browser }) => {
   const aliceContext = await browser.newContext({ permissions: ["notifications"] });
   const bobContext = await browser.newContext({ permissions: ["notifications"] });
@@ -388,6 +401,39 @@ test("leave action removes the teammate and force releases the keyboard", async 
   expect(left.session.members.owner).toBeUndefined();
   expect(left.session.members.guest.name).toBe("Guest");
   expect(left.session.events.at(-1).message).toContain("left and released the keyboard");
+});
+
+test("last member leaving deletes the session", async ({ page }) => {
+  const created = await sessionPost(page, { action: "create", clientId: "owner", name: "Owner", durationMs: 5 * 60 * 60 * 1000 });
+  const code = created.code;
+
+  const left = await sessionPost(page, { action: "leave", code, clientId: "owner", name: "Owner" });
+  expect(left.deleted).toBe(true);
+  const lookup = await page.request.get(`/api/session?${new URLSearchParams({ code, clientId: "owner", name: "Owner" })}`);
+  expect(lookup.ok()).toBeFalsy();
+  expect(lookup.status()).toBe(404);
+});
+
+test("leaving from teammates removes the member for everyone else", async ({ browser }) => {
+  const ownerContext = await browser.newContext();
+  const bobContext = await browser.newContext();
+  const owner = await ownerContext.newPage();
+  const bob = await bobContext.newPage();
+
+  const code = await createSession(owner, "Owner");
+  await bob.goto(`/?code=${code}`);
+  await bob.locator('input[name="name"]').fill("Bob");
+  await bob.getByRole("button", { name: "Join Session" }).click();
+  await expect(owner.locator(".members")).toContainText("Bob", { timeout: 5000 });
+
+  await bob.locator(".member.self").getByRole("button", { name: "Leave" }).click();
+  await bob.getByRole("dialog", { name: "Leave session" }).getByRole("button", { name: "Leave session" }).click();
+  await expect(bob.getByRole("button", { name: "Create Session" })).toBeVisible();
+  await expect(owner.locator(".members")).not.toContainText("Bob", { timeout: 5000 });
+  await expect(owner.locator(".members")).toContainText("Owner");
+
+  await ownerContext.close();
+  await bobContext.close();
 });
 
 test("closing while only the countdown is running still asks for confirmation", async ({ browser }) => {

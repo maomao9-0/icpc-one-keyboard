@@ -218,6 +218,26 @@ textarea {
   background: rgba(255, 252, 244, 0.45);
 }
 
+.btn.danger {
+  color: var(--danger);
+  background: rgba(123, 33, 28, 0.08);
+  border-color: rgba(123, 33, 28, 0.36);
+}
+
+.btn.danger:hover {
+  background: rgba(123, 33, 28, 0.14);
+}
+
+.btn.primary.danger {
+  color: var(--paper);
+  background: var(--danger);
+  border-color: var(--danger);
+}
+
+.btn.primary.danger:hover {
+  background: #8e2822;
+}
+
 .btn.main {
   min-height: 72px;
   font-size: clamp(1.2rem, 3vw, 2rem);
@@ -346,6 +366,18 @@ textarea {
   gap: 6px;
 }
 
+.teammates-card {
+  display: grid;
+  gap: 14px;
+}
+
+.teammates-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+
 .member {
   display: flex;
   justify-content: space-between;
@@ -364,9 +396,32 @@ textarea {
   color: var(--ink);
 }
 
+.member.self span {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .member small {
   font-family: "Courier New", monospace;
   font-size: 0.72rem;
+}
+
+.member-leave {
+  border: 0;
+  padding: 0;
+  color: var(--danger);
+  background: transparent;
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+  text-decoration: underline;
+  text-decoration-color: rgba(123, 33, 28, 0.36);
+  text-underline-offset: 0.18em;
+}
+
+.member-leave:hover {
+  transform: none;
+  background: transparent;
 }
 
 .holder-tag span::after {
@@ -481,6 +536,35 @@ details summary::-webkit-details-marker {
   padding: 24px;
   display: grid;
   gap: 16px;
+}
+
+.leave-card {
+  width: min(560px, 100%);
+  background:
+    linear-gradient(180deg, rgba(255, 252, 244, 0.92), rgba(255, 248, 239, 0.94)),
+    var(--panel);
+  box-shadow: 0 30px 90px rgba(24, 23, 19, 0.18);
+}
+
+.leave-head {
+  align-items: start;
+}
+
+.leave-copy {
+  margin: 0;
+  font-size: 1.02rem;
+  line-height: 1.6;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.leave-copy strong {
+  font-family: "Courier New", monospace;
+  letter-spacing: 0.08em;
+}
+
+.leave-modal .split {
+  margin-top: 4px;
 }
 
 .modal-head {

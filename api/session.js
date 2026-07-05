@@ -29,6 +29,7 @@ function getSession(req, res) {
   ensureSession(session);
   if (req.query.clientId && req.query.name) touch(session, req.query);
   expireRequest(session);
+  pruneSession(code, session);
   saveSessions();
   return res.json({ session });
 }
@@ -133,8 +134,9 @@ function postSession(req, res) {
     return res.status(400).json({ error: "Unknown action" });
   }
 
+  const deleted = pruneSession(cleanCode(body.code), session);
   saveSessions();
-  return res.json({ session });
+  return res.json(deleted ? { session: null, deleted: true } : { session });
 }
 
 function join(session, body) {
@@ -196,6 +198,16 @@ function leave(session, body) {
     return;
   }
   event(session, { ...body, name: memberName }, "left the session", `${memberName} left the session`);
+}
+
+function isSessionEmpty(session) {
+  return !session.holder && !session.pendingRequest && Object.keys(session.members || {}).length === 0;
+}
+
+function pruneSession(code, session) {
+  if (!isSessionEmpty(session)) return false;
+  sessions.delete(code);
+  return true;
 }
 
 function acceptRequest(session, body) {
