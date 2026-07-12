@@ -2,7 +2,7 @@ const http = require("node:http");
 const fs = require("node:fs");
 const path = require("node:path");
 
-const root = path.join(__dirname, "..");
+const root = process.env.STATIC_ROOT || path.join(__dirname, "..");
 const host = process.env.HOST || "127.0.0.1";
 const port = Number(process.env.PORT || process.env.PLAYWRIGHT_PORT || 4173);
 const origin = `http://${host}:${port}`;

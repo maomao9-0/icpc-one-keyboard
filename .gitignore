@@ -1,5 +1,6 @@
 # Dependencies
 node_modules/
+dist/
 
 # Vercel local state
 .vercel/
@@ -18,3 +19,4 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
+.env*

@@ -1,8 +1,8 @@
 # One Keyboard
 
-A tiny vanilla HTML/CSS/JS app for ICPC teams practising remotely with the one-keyboard rule. Teams create a short session code, share a join link, claim/release the keyboard, and keep a simple audit log.
+A React + Vite app for ICPC teams practising remotely with the one-keyboard rule. Teams create a short session code, share a join link, claim/release the keyboard, and keep a simple audit log.
 
-Sessions are retained for ten hours after their last activity, including when every participant has the page minimized. Leaving a session is explicit; backgrounding or closing a page does not remove its member. State is stored in an ephemeral `/tmp` file from the Vercel function, so sessions may still reset after redeploys, cold starts, or serverless instance changes.
+Sessions are retained for ten hours after their last activity, including when every participant has the page minimized. Leaving a session is explicit; backgrounding or closing a page does not remove its member. Production sessions are stored in Upstash Redis with a refreshed ten-hour TTL, so they survive Vercel cold starts and function scaling.
 
 ## Test Locally
 
@@ -12,7 +12,21 @@ Install dependencies:
 npm install
 ```
 
-Run the Playwright browser test suite:
+Run the Vite development server:
+
+```sh
+npm run dev
+```
+
+The Vite development server includes the local `/api/session` handler and uses an in-memory development adapter, so creating and joining sessions works without a separate backend process.
+
+Create a production build:
+
+```sh
+npm run build
+```
+
+Run the Playwright browser test suite (it builds the Vite client first):
 
 ```sh
 npm run test:e2e
@@ -66,17 +80,20 @@ For production:
 vercel --prod
 ```
 
-No environment variables or database setup are required.
+No environment variables are required locally. Production requires the Redis integration below.
+
+## Production storage
+
+Install the **Upstash Redis** integration from the Vercel Marketplace and connect it to this project. Vercel may inject either `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` or the compatible `KV_REST_API_URL` / `KV_REST_API_TOKEN`; both are supported. Production intentionally fails fast if those credentials are absent rather than silently using ephemeral session storage.
 
 ## Files
 
-- `index.html`: app shell
-- `styles.css`: minimal monochrome interface
-- `app/`: frontend modules
-- `app/main.js`: bootstrap, network calls, event wiring
-- `app/state.js`: shared state and constants
-- `app/helpers.js`: pure formatting, session, and collection helpers
-- `app/views.js`: UI templates for the join screen, session screen, and modals
-- `app/live.js`: timer, request countdown, and member presence live updates
-- `api/session.js`: ephemeral session API
+- `src/App.jsx`: application composition and UI components
+- `src/hooks/useSessionController.js`: API calls, polling, identity, notifications, and error state
+- `src/hooks/useLiveNow.js`: timer, request-expiry, and presence scheduling
+- `src/lib/`: pure session and storage utilities
+- `public/styles.css`: the preserved monochrome interface, served without weakening the CSP
+- `vite.config.js`: Vite + React configuration
+- `api/session.js`: atomic Redis-backed session API
+- `api/session-store.js`: Upstash Redis and explicit local-test storage adapters
 - `vercel.json`: Vercel config

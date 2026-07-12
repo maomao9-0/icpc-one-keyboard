@@ -65,6 +65,7 @@ async function main() {
       ...process.env,
       PORT: String(port),
       ONE_KEYBOARD_STORE: ":memory:",
+      STATIC_ROOT: path.join(root, "dist"),
     },
     stdio: "inherit",
   });

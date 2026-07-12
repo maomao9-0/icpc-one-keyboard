@@ -554,17 +554,15 @@ test("last member leaving deletes the session", async ({ page }) => {
   expect(lookup.status()).toBe(404);
 });
 
-test("stale sessions are pruned after the configured inactivity window", async () => {
+test("session storage expires sessions using the configured TTL", async () => {
   const previousStore = process.env.ONE_KEYBOARD_STORE;
-  const previousStale = process.env.ONE_KEYBOARD_STALE_SESSION_MS;
-  const previousSessions = globalThis.__oneKeyboardSessions;
-  const modulePath = require.resolve("../api/session.js");
+  const previousTtl = process.env.ONE_KEYBOARD_SESSION_TTL_SECONDS;
+  const previousSessions = globalThis.__oneKeyboardMemorySessions;
 
   try {
     process.env.ONE_KEYBOARD_STORE = ":memory:";
-    process.env.ONE_KEYBOARD_STALE_SESSION_MS = "20";
-    globalThis.__oneKeyboardSessions = new Map();
-    delete require.cache[modulePath];
+    process.env.ONE_KEYBOARD_SESSION_TTL_SECONDS = "0.02";
+    globalThis.__oneKeyboardMemorySessions = new Map();
     const handler = require("../api/session.js");
 
     const created = await callSessionHandler(handler, {
@@ -579,63 +577,47 @@ test("stale sessions are pruned after the configured inactivity window", async (
     });
     expect(lookup.status).toBe(404);
   } finally {
-    delete require.cache[modulePath];
     if (previousStore === undefined) delete process.env.ONE_KEYBOARD_STORE;
     else process.env.ONE_KEYBOARD_STORE = previousStore;
-    if (previousStale === undefined) delete process.env.ONE_KEYBOARD_STALE_SESSION_MS;
-    else process.env.ONE_KEYBOARD_STALE_SESSION_MS = previousStale;
-    globalThis.__oneKeyboardSessions = previousSessions;
+    if (previousTtl === undefined) delete process.env.ONE_KEYBOARD_SESSION_TTL_SECONDS;
+    else process.env.ONE_KEYBOARD_SESSION_TTL_SECONDS = previousTtl;
+    globalThis.__oneKeyboardMemorySessions = previousSessions;
   }
 });
 
-test("the default inactivity window retains sessions for ten hours", async () => {
+test("session activity refreshes the storage TTL", async () => {
   const previousStore = process.env.ONE_KEYBOARD_STORE;
-  const previousStale = process.env.ONE_KEYBOARD_STALE_SESSION_MS;
-  const previousSessions = globalThis.__oneKeyboardSessions;
-  const modulePath = require.resolve("../api/session.js");
-  const tenHoursMs = 10 * 60 * 60 * 1000;
+  const previousTtl = process.env.ONE_KEYBOARD_SESSION_TTL_SECONDS;
+  const previousSessions = globalThis.__oneKeyboardMemorySessions;
 
   try {
     process.env.ONE_KEYBOARD_STORE = ":memory:";
-    delete process.env.ONE_KEYBOARD_STALE_SESSION_MS;
-    globalThis.__oneKeyboardSessions = new Map();
-    delete require.cache[modulePath];
+    process.env.ONE_KEYBOARD_SESSION_TTL_SECONDS = "0.08";
+    globalThis.__oneKeyboardMemorySessions = new Map();
     const handler = require("../api/session.js");
 
     const created = await callSessionHandler(handler, {
       body: { action: "create", clientId: "owner", name: "Owner", durationMs: 5 * 60 * 60 * 1000 },
     });
-    const session = globalThis.__oneKeyboardSessions.get(created.data.code);
-    const setActivityTime = (time) => {
-      session.createdAt = time;
-      session.lastActivityAt = time;
-      session.members.owner.seenAt = time;
-      for (const entry of session.events) {
-        entry.time = time;
-        entry.clockMs = time;
-      }
-    };
-
-    setActivityTime(Date.now() - tenHoursMs + 1000);
+    await sleep(50);
     const retained = await callSessionHandler(handler, {
       method: "GET",
       query: { code: created.data.code, clientId: "owner", name: "Owner" },
     });
     expect(retained.status).toBe(200);
 
-    setActivityTime(Date.now() - tenHoursMs - 1000);
+    await sleep(90);
     const expired = await callSessionHandler(handler, {
       method: "GET",
       query: { code: created.data.code, clientId: "owner", name: "Owner" },
     });
     expect(expired.status).toBe(404);
   } finally {
-    delete require.cache[modulePath];
     if (previousStore === undefined) delete process.env.ONE_KEYBOARD_STORE;
     else process.env.ONE_KEYBOARD_STORE = previousStore;
-    if (previousStale === undefined) delete process.env.ONE_KEYBOARD_STALE_SESSION_MS;
-    else process.env.ONE_KEYBOARD_STALE_SESSION_MS = previousStale;
-    globalThis.__oneKeyboardSessions = previousSessions;
+    if (previousTtl === undefined) delete process.env.ONE_KEYBOARD_SESSION_TTL_SECONDS;
+    else process.env.ONE_KEYBOARD_SESSION_TTL_SECONDS = previousTtl;
+    globalThis.__oneKeyboardMemorySessions = previousSessions;
   }
 });
 
@@ -824,6 +806,28 @@ test("settings cog opens and close button closes the modal", async ({ page }) =>
   await expect(page.locator(".icon svg")).toBeVisible();
   await page.getByRole("button", { name: "Close" }).click();
   await expect(page.getByRole("dialog", { name: "Settings" })).toHaveCount(0);
+});
+
+test("escape closes settings and a non-holder sees accurate leave guidance", async ({ browser }) => {
+  const ownerContext = await browser.newContext();
+  const guestContext = await browser.newContext();
+  const owner = await ownerContext.newPage();
+  const guest = await guestContext.newPage();
+  const code = await createSession(owner, "Owner");
+
+  await owner.getByRole("button", { name: "Claim keyboard" }).click();
+  await guest.goto(`/?code=${code}`);
+  await guest.locator('input[name="name"]').fill("Guest");
+  await guest.getByRole("button", { name: "Join Session" }).click();
+  await guest.getByRole("button", { name: "Settings" }).click();
+  await guest.keyboard.press("Escape");
+  await expect(guest.getByRole("dialog", { name: "Settings" })).toHaveCount(0);
+
+  await guest.getByRole("button", { name: "Leave" }).click();
+  await expect(guest.getByRole("dialog", { name: "Leave session" })).toContainText("Your presence will be removed from the session.");
+
+  await ownerContext.close();
+  await guestContext.close();
 });
 
 test("teammate list stays compact and shows active members", async ({ browser }) => {
