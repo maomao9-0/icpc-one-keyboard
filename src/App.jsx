@@ -1,5 +1,9 @@
-import { useCallback, useEffect, useState } from "react";
-import { CopyIcon, SettingsIcon } from "./components/Icons.jsx";
+import { useEffect, useState } from "react";
+import {
+  CopyIcon,
+  LeaveIcon,
+  SettingsIcon,
+} from "./components/Icons.jsx";
 import { useSessionController } from "./hooks/useSessionController.js";
 import { useLiveNow } from "./hooks/useLiveNow.js";
 import {
@@ -10,6 +14,7 @@ import {
   durationParts,
   eventTime,
   formatClock,
+  formatCountdown,
   formatDuration,
   isOnline,
   memberEntries,
@@ -53,12 +58,7 @@ export default function App() {
   const [auditOpen, setAuditOpen] = useState(false);
   const [noteOpen, setNoteOpen] = useState(false);
   const [note, setNote] = useState("");
-  const now = useLiveNow(
-    session,
-    useCallback(() => {
-      void poll();
-    }, [poll]),
-  );
+  const now = useLiveNow(session, poll);
 
   useEffect(() => {
     const warn = (event) => {
@@ -89,12 +89,12 @@ export default function App() {
     // The payload must use the submitted values, not the asynchronous state update.
     const action =
       event.nativeEvent.submitter?.value === "create" ? "create" : "join";
-    await call(action, {
+    const result = await call(action, {
       name,
       code,
       ...(action === "create" ? { durationMs: DEFAULT_DURATION_MS } : {}),
     });
-    requestNotifications();
+    if (result) requestNotifications();
   };
 
   const act = async () => {
@@ -121,9 +121,9 @@ export default function App() {
   return (
     <main className="shell">
       <div className="topbar">
-        <div>
+        <div className="topbar-copy">
           <div className="brand">One Keyboard</div>
-          <div>
+          <div className="signed-in">
             Signed in as <strong>{identity.name}</strong>
             {syncIssue ? (
               <>
@@ -136,14 +136,17 @@ export default function App() {
           </div>
         </div>
         <div className="topbar-actions">
-          <span className="code">{session.code}</span>
+          <span className="code-chip">
+            <span className="code-label">Session</span>
+            <span className="code">{session.code}</span>
+          </span>
           <button
-            className="btn icon"
+            className="btn utility-btn icon"
             type="button"
             onClick={() => setModal("settings")}
-            aria-label="Settings"
           >
             <SettingsIcon />
+            <span>Settings</span>
           </button>
         </div>
       </div>
@@ -211,7 +214,7 @@ export default function App() {
             });
             if (result) setModal(null);
           }}
-          onCopy={() => copyLink(session.code, controller.showToast)}
+          onCopy={() => void copyLink(session.code, controller.showToast)}
         />
       ) : null}
       {modal === "leave" ? (
@@ -219,6 +222,7 @@ export default function App() {
           kind="leave"
           session={session}
           clientId={identity.clientId}
+          busy={busy}
           onClose={() => setModal(null)}
           onConfirm={() => {
             setModal(null);
@@ -231,6 +235,7 @@ export default function App() {
           kind="kick"
           session={session}
           target={modal.member}
+          busy={busy}
           onClose={() => setModal(null)}
           onConfirm={() => {
             const targetClientId = modal.member.clientId;
@@ -303,7 +308,7 @@ function Timer({ session, now, busy, onCall }) {
     <section className="panel tile">
       <p className="label">Timer</p>
       <div className="timer" data-timer>
-        {formatClock(remainingMs(session, now))}
+        {formatCountdown(remainingMs(session, now))}
       </div>
       <div className="timer-actions">
         <button
@@ -379,7 +384,7 @@ function Members({ session, clientId, now, onLeave, onKick }) {
   return (
     <section className="panel tile compact teammates-card">
       <div className="teammates-head">
-        <p className="label">TEAMMATES</p>
+        <p className="label">Teammates</p>
       </div>
       <div className="members">
         {members.map((member) => {
@@ -392,11 +397,12 @@ function Members({ session, clientId, now, onLeave, onKick }) {
               <span>{member.name}</span>
               {self ? (
                 <button
-                  className="member-leave"
+                  className="member-action member-leave"
                   type="button"
                   onClick={onLeave}
                 >
-                  Leave
+                  <LeaveIcon />
+                  <span>Leave</span>
                 </button>
               ) : (
                 <span className="member-tools">
@@ -607,7 +613,15 @@ function Settings({ session, name, busy, onClose, onSave, onCopy }) {
   );
 }
 
-function Confirm({ kind, session, target, clientId, onClose, onConfirm }) {
+function Confirm({
+  kind,
+  session,
+  target,
+  clientId,
+  busy,
+  onClose,
+  onConfirm,
+}) {
   useEscape(onClose);
   const leave = kind === "leave";
   const holder = leave
@@ -656,6 +670,7 @@ function Confirm({ kind, session, target, clientId, onClose, onConfirm }) {
             className="btn ghost"
             type="button"
             onClick={onClose}
+            disabled={busy}
             autoFocus
           >
             {leave ? "Stay" : "Cancel"}
@@ -664,6 +679,7 @@ function Confirm({ kind, session, target, clientId, onClose, onConfirm }) {
             className="btn primary danger"
             type="button"
             onClick={onConfirm}
+            disabled={busy}
           >
             {leave ? "Leave session" : "Kick teammate"}
           </button>
@@ -691,9 +707,13 @@ function useEscape(onEscape) {
   }, [onEscape]);
 }
 
-function copyLink(code, showToast) {
-  showToast("Link copied.");
-  navigator.clipboard
-    ?.writeText(`${location.origin}/?code=${code}`)
-    .catch(() => showToast("Could not copy.", true));
+async function copyLink(code, showToast) {
+  try {
+    if (!navigator.clipboard?.writeText)
+      throw new Error("Clipboard access is unavailable.");
+    await navigator.clipboard.writeText(`${location.origin}/?code=${code}`);
+    showToast("Link copied.");
+  } catch {
+    showToast("Could not copy.", true);
+  }
 }

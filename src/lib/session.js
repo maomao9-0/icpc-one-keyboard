@@ -19,7 +19,21 @@ export function formatClock(ms) {
   return `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 }
 
-export function remainingMs(session, now = Date.now()) {
+// Countdown labels conventionally hold a value for its full second. This also
+// avoids showing one second less immediately after pressing Start.
+export function formatCountdown(ms) {
+  const safe = Math.max(0, Number(ms) || 0);
+  return formatClock(safe ? Math.ceil(safe / 1_000) * 1_000 : 0);
+}
+
+export function sessionNow(session) {
+  const clock = session?.clock;
+  if (clock && typeof performance !== "undefined")
+    return clock.serverNow + (performance.now() - clock.receivedAt);
+  return Date.now();
+}
+
+export function remainingMs(session, now = sessionNow(session)) {
   const base = Number(
     session?.remainingMs ?? session?.durationMs ?? DEFAULT_DURATION_MS,
   );

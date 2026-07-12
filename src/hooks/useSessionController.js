@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { API, createClientKey } from "../lib/session.js";
+import { API, createClientKey, sessionNow } from "../lib/session.js";
 import { readStored, writeStored } from "../lib/storage.js";
 
 function initialIdentity() {
@@ -33,6 +33,7 @@ export function useSessionController() {
   const identityRef = useRef(identity);
   const sessionRef = useRef(session);
   const writesRef = useRef(0);
+  const pollInFlightRef = useRef(false);
   const mutationVersionRef = useRef(0);
   const pollRef = useRef(() => {});
   const toastTimer = useRef();
@@ -64,28 +65,39 @@ export function useSessionController() {
     [showToast],
   );
 
-  const receiveSession = useCallback((nextSession, code) => {
-    if (!nextSession) return;
-    setSession(nextSession);
-    if (code) {
-      setIdentity((current) =>
-        current.code === code ? current : { ...current, code },
-      );
-      history.replaceState(null, "", `/?code=${code}`);
-    }
-    const latest = nextSession.events?.at(-1);
-    if (latest && latest.id !== seenEvent.current) {
-      if (
-        seenEvent.current &&
-        latest.clientId !== identityRef.current.clientId &&
-        "Notification" in window &&
-        Notification.permission === "granted"
-      ) {
-        new Notification("One Keyboard", { body: latest.message });
+  const receiveSession = useCallback(
+    (nextSession, code, serverNow = Date.now()) => {
+      if (!nextSession) return;
+      setSession({
+        ...nextSession,
+        // Map the server epoch to a monotonic client clock. The mapping remains
+        // stable if the device clock is adjusted while the contest is running.
+        clock: {
+          serverNow: Number(serverNow) || Date.now(),
+          receivedAt: performance.now(),
+        },
+      });
+      if (code) {
+        setIdentity((current) =>
+          current.code === code ? current : { ...current, code },
+        );
+        history.replaceState(null, "", `/?code=${code}`);
       }
-      seenEvent.current = latest.id;
-    }
-  }, []);
+      const latest = nextSession.events?.at(-1);
+      if (latest && latest.id !== seenEvent.current) {
+        if (
+          seenEvent.current &&
+          latest.clientId !== identityRef.current.clientId &&
+          "Notification" in window &&
+          Notification.permission === "granted"
+        ) {
+          new Notification("One Keyboard", { body: latest.message });
+        }
+        seenEvent.current = latest.id;
+      }
+    },
+    [],
+  );
 
   const payload = useCallback(
     (action, extra = {}) => ({
@@ -101,12 +113,13 @@ export function useSessionController() {
   const call = useCallback(
     async (action, extra = {}) => {
       mutationVersionRef.current += 1;
+      const mutationVersion = mutationVersionRef.current;
       const optimisticTimerSession =
         action === "timer" ? sessionRef.current : null;
       writesRef.current += 1;
       setBusy(true);
       if (action === "timer" && sessionRef.current) {
-        const now = Date.now();
+        const now = sessionNow(sessionRef.current);
         setSession((current) => {
           if (!current) return current;
           const remaining =
@@ -149,9 +162,10 @@ export function useSessionController() {
         });
         const data = await responseData(response);
         if (!response.ok) throw new Error(data.error || "Request failed");
+        if (mutationVersion !== mutationVersionRef.current) return data;
         setSyncIssue("");
         if (action === "leave") resetHome();
-        else receiveSession(data.session, data.code);
+        else receiveSession(data.session, data.code, data.serverNow);
         return data;
       } catch (error) {
         const message = error.message || "Request failed";
@@ -161,7 +175,11 @@ export function useSessionController() {
         )
           resetHome(message);
         else {
-          if (optimisticTimerSession) setSession(optimisticTimerSession);
+          if (
+            optimisticTimerSession &&
+            mutationVersion === mutationVersionRef.current
+          )
+            setSession(optimisticTimerSession);
           showToast(message, true);
         }
         return null;
@@ -175,7 +193,14 @@ export function useSessionController() {
 
   const poll = useCallback(async () => {
     const current = identityRef.current;
-    if (!current.code || !sessionRef.current || writesRef.current) return;
+    if (
+      !current.code ||
+      !sessionRef.current ||
+      writesRef.current ||
+      pollInFlightRef.current
+    )
+      return;
+    pollInFlightRef.current = true;
     const pollVersion = mutationVersionRef.current;
     try {
       const query = new URLSearchParams({
@@ -193,7 +218,7 @@ export function useSessionController() {
           "You were removed from the session. Join again if needed.",
         );
       setSyncIssue("");
-      receiveSession(data.session);
+      receiveSession(data.session, undefined, data.serverNow);
     } catch (error) {
       const message = error.message || "Could not sync session";
       if (
@@ -202,6 +227,8 @@ export function useSessionController() {
       )
         resetHome(message);
       else setSyncIssue(message);
+    } finally {
+      pollInFlightRef.current = false;
     }
   }, [receiveSession, resetHome]);
 

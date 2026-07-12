@@ -43,16 +43,16 @@ module.exports = async function handler(req, res) {
 
 async function getSession(req, res) {
   const code = cleanCode(req.query.code);
+  const member = canonicalMemberBody(req.query);
   const session = await mutateSession(code, (current) => {
-    authorizeMember(current, req.query, {
+    authorizeMember(current, member, {
       allowMissingMembership: false,
       allowRemoved: false,
     });
-    if (canRefreshMember(current, req.query.clientId))
-      touch(current, req.query);
+    if (canRefreshMember(current, member.clientId)) touch(current, member);
     expireRequest(current);
   });
-  return res.json({ session: publicSession(session) });
+  return res.json(sessionResponse(session));
 }
 
 function remaining(session, now = Date.now()) {
@@ -133,12 +133,17 @@ function ensureSession(session) {
 }
 
 async function postSession(req, res) {
-  const body = req.body || {};
+  // Keep the canonical identity returned by the authentication helpers all the
+  // way through the mutation.  Previously an id such as " alice " could pass
+  // authentication as "alice", while claim/request code stored the untrimmed
+  // value in the holder or event.  That left a keyboard holder that the real
+  // member could no longer release.
+  const body = canonicalMemberBody(req.body || {});
   const action = String(body.action || "");
   if (action === "create") {
     const session = await createSession(body);
     const code = session.code;
-    return res.json({ code, session: publicSession(session) });
+    return res.json(sessionResponse(session, session.code));
   }
   if (!actions.includes(action)) {
     throw new Error("Unknown action");
@@ -167,10 +172,19 @@ async function postSession(req, res) {
   });
   const deleted = !session;
   return res.json(
-    deleted
-      ? { session: null, deleted: true }
-      : { session: publicSession(session) },
+    deleted ? { session: null, deleted: true } : sessionResponse(session),
   );
+}
+
+// Give clients the server's clock with every snapshot.  A client uses this as
+// the epoch for its monotonic display clock, so local wall-clock adjustments
+// cannot make a running timer jump backwards or forwards.
+function sessionResponse(session, code) {
+  return {
+    ...(code ? { code } : {}),
+    session: publicSession(session),
+    serverNow: Date.now(),
+  };
 }
 
 async function createSession(body) {
@@ -181,7 +195,7 @@ async function createSession(body) {
       code: randomCode(),
       createdAt: now,
       durationMs,
-      timerEnabled: Boolean(body.timerEnabled),
+      timerEnabled: parseBoolean(body.timerEnabled),
       timerRunning: false,
       runningSince: null,
       remainingMs: durationMs,
@@ -288,9 +302,12 @@ function release(session, body) {
 }
 
 function requestKeyboard(session, body) {
+  expireRequest(session);
   if (!session.holder) throw new Error("Keyboard is unused");
   if (session.holder.clientId === body.clientId)
     throw new Error("You already hold the keyboard");
+  if (session.pendingRequest)
+    throw new Error("A keyboard request is already pending");
   const actionNote = note(body);
   session.pendingRequest = {
     id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
@@ -345,8 +362,7 @@ function leave(session, body, context = {}) {
 }
 
 function kick(session, body) {
-  const targetClientId = String(body.targetClientId || "").trim();
-  if (!targetClientId) throw new Error("Missing teammate to kick");
+  const targetClientId = parseClientId(body.targetClientId);
   const target = session.members[targetClientId];
   if (!target) throw new Error("Teammate is no longer in this session");
   session.removedClients[targetClientId] = Date.now();
@@ -424,7 +440,7 @@ function expireRequest(session) {
 
 function settings(session, body) {
   const hadRelativeClock = session.clockMode === "relative";
-  session.timerEnabled = Boolean(body.timerEnabled);
+  session.timerEnabled = parseBoolean(body.timerEnabled);
   const durationMs = clampDuration(body.durationMs);
   const durationChanged = durationMs !== session.durationMs;
   if (durationMs !== session.durationMs) {
@@ -540,7 +556,21 @@ function cleanCode(code) {
 
 function clampDuration(value) {
   const ms = Number(value) || 5 * 60 * 60 * 1000;
-  return Math.min(Math.max(ms, 15 * 60 * 1000), 24 * 60 * 60 * 1000);
+  return Math.round(
+    Math.min(Math.max(ms, 15 * 60 * 1000), 24 * 60 * 60 * 1000),
+  );
+}
+
+function parseBoolean(value) {
+  return value === true || value === "true";
+}
+
+function canonicalMemberBody(body) {
+  return {
+    ...body,
+    clientId: parseClientId(body.clientId),
+    clientKey: parseClientKey(body.clientKey),
+  };
 }
 
 function authorizeMember(session, body, options = {}) {
