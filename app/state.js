@@ -31,9 +31,6 @@ export const state = {
     askedPermission: false,
     lastSeenEvent: "",
   },
-  lifecycle: {
-    leaveSent: false,
-  },
   ui: {
     settingsOpen: false,
     auditOpen: false,

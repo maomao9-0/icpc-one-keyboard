@@ -2,7 +2,7 @@
 
 A tiny vanilla HTML/CSS/JS app for ICPC teams practising remotely with the one-keyboard rule. Teams create a short session code, share a join link, claim/release the keyboard, and keep a simple audit log.
 
-State is stored in an ephemeral `/tmp` file from the Vercel function. There is no database, so sessions may reset after redeploys, cold starts, or serverless instance changes.
+Sessions are retained for ten hours after their last activity, including when every participant has the page minimized. Leaving a session is explicit; backgrounding or closing a page does not remove its member. State is stored in an ephemeral `/tmp` file from the Vercel function, so sessions may still reset after redeploys, cold starts, or serverless instance changes.
 
 ## Test Locally
 

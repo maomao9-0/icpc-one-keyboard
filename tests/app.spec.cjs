@@ -588,6 +588,57 @@ test("stale sessions are pruned after the configured inactivity window", async (
   }
 });
 
+test("the default inactivity window retains sessions for ten hours", async () => {
+  const previousStore = process.env.ONE_KEYBOARD_STORE;
+  const previousStale = process.env.ONE_KEYBOARD_STALE_SESSION_MS;
+  const previousSessions = globalThis.__oneKeyboardSessions;
+  const modulePath = require.resolve("../api/session.js");
+  const tenHoursMs = 10 * 60 * 60 * 1000;
+
+  try {
+    process.env.ONE_KEYBOARD_STORE = ":memory:";
+    delete process.env.ONE_KEYBOARD_STALE_SESSION_MS;
+    globalThis.__oneKeyboardSessions = new Map();
+    delete require.cache[modulePath];
+    const handler = require("../api/session.js");
+
+    const created = await callSessionHandler(handler, {
+      body: { action: "create", clientId: "owner", name: "Owner", durationMs: 5 * 60 * 60 * 1000 },
+    });
+    const session = globalThis.__oneKeyboardSessions.get(created.data.code);
+    const setActivityTime = (time) => {
+      session.createdAt = time;
+      session.lastActivityAt = time;
+      session.members.owner.seenAt = time;
+      for (const entry of session.events) {
+        entry.time = time;
+        entry.clockMs = time;
+      }
+    };
+
+    setActivityTime(Date.now() - tenHoursMs + 1000);
+    const retained = await callSessionHandler(handler, {
+      method: "GET",
+      query: { code: created.data.code, clientId: "owner", name: "Owner" },
+    });
+    expect(retained.status).toBe(200);
+
+    setActivityTime(Date.now() - tenHoursMs - 1000);
+    const expired = await callSessionHandler(handler, {
+      method: "GET",
+      query: { code: created.data.code, clientId: "owner", name: "Owner" },
+    });
+    expect(expired.status).toBe(404);
+  } finally {
+    delete require.cache[modulePath];
+    if (previousStore === undefined) delete process.env.ONE_KEYBOARD_STORE;
+    else process.env.ONE_KEYBOARD_STORE = previousStore;
+    if (previousStale === undefined) delete process.env.ONE_KEYBOARD_STALE_SESSION_MS;
+    else process.env.ONE_KEYBOARD_STALE_SESSION_MS = previousStale;
+    globalThis.__oneKeyboardSessions = previousSessions;
+  }
+});
+
 test("leaving from teammates removes the member for everyone else", async ({ browser }) => {
   const ownerContext = await browser.newContext();
   const bobContext = await browser.newContext();
@@ -626,7 +677,7 @@ test("closing while only the countdown is running still asks for confirmation", 
   await expect.poll(() => page.isClosed()).toBe(true);
 });
 
-test("closing an active page asks for confirmation and removes the holder from the session", async ({ browser }) => {
+test("closing an active page asks for confirmation without removing the holder from the session", async ({ browser }) => {
   const aliceContext = await browser.newContext();
   const bobContext = await browser.newContext();
   const alice = await aliceContext.newPage();
@@ -649,17 +700,16 @@ test("closing an active page asks for confirmation and removes the holder from t
   await dialog.accept();
   await expect.poll(() => alice.isClosed()).toBe(true);
 
-  await expect(bob.locator(".holder")).toHaveText("Unused", { timeout: 5000 });
-  await expect(bob.locator(".members")).not.toContainText("Alice", { timeout: 5000 });
+  await expect(bob.locator(".holder")).toHaveText("Alice", { timeout: 5000 });
+  await expect(bob.locator(".members")).toContainText("Alice", { timeout: 5000 });
 
   const bobClient = await bob.evaluate(() => ({
     clientId: localStorage.getItem("clientId"),
     clientKey: localStorage.getItem("clientKey"),
   }));
   const session = await sessionGet(bob, { code, ...bobClient });
-  expect(session.session.holder).toBeNull();
-  expect(Object.values(session.session.members).map((member) => member.name)).not.toContain("Alice");
-  expect(session.session.events.at(-1).message).toContain("left and released the keyboard");
+  expect(session.session.holder.name).toBe("Alice");
+  expect(Object.values(session.session.members).map((member) => member.name)).toContain("Alice");
 
   await bobContext.close();
 });

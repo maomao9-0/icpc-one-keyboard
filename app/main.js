@@ -173,26 +173,8 @@ function resetToHome() {
   state.ui.actionNoteOpen = false;
   state.ui.leaveOpen = false;
   state.ui.kickTarget = null;
-  state.lifecycle.leaveSent = false;
   history.replaceState(null, "", "/");
   render();
-}
-
-function sendLeave() {
-  const payload = leavePayload();
-  if (!payload || state.lifecycle.leaveSent) return;
-  state.lifecycle.leaveSent = true;
-  const body = JSON.stringify(payload);
-  if (navigator.sendBeacon) {
-    const blob = new Blob([body], { type: "application/json" });
-    if (navigator.sendBeacon(api, blob)) return;
-  }
-  fetch(api, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body,
-    keepalive: true,
-  }).catch(() => {});
 }
 
 function editingModal() {
@@ -214,7 +196,6 @@ app.addEventListener("submit", (event) => {
   const form = event.target;
   const data = Object.fromEntries(new FormData(form));
   if (form.dataset.form === "join") {
-    state.lifecycle.leaveSent = false;
     state.identity.name = data.name.trim();
     state.identity.code = String(data.code || "").trim().toUpperCase();
     localStorage.setItem("name", state.identity.name);
@@ -340,11 +321,6 @@ window.addEventListener("beforeunload", (event) => {
   if (!shouldWarnOnExit()) return;
   event.preventDefault();
   event.returnValue = "";
-});
-
-window.addEventListener("pagehide", (event) => {
-  if (event.persisted) return;
-  sendLeave();
 });
 
 document.addEventListener("visibilitychange", () => {

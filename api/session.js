@@ -17,7 +17,8 @@ globalThis.__oneKeyboardSessions = sessions;
 const codeChars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const storePath = process.env.ONE_KEYBOARD_STORE || path.join(os.tmpdir(), "one-keyboard-sessions.json");
 const memoryStore = storePath === ":memory:";
-const staleSessionMs = Number(process.env.ONE_KEYBOARD_STALE_SESSION_MS) || 8 * 60 * 60 * 1000;
+// Backgrounded pages may be suspended for long periods, so retain inactive sessions generously.
+const staleSessionMs = Number(process.env.ONE_KEYBOARD_STALE_SESSION_MS) || 10 * 60 * 60 * 1000;
 const noteLimit = 140;
 const actions = ["join", "claim", "release", "leave", "kick", "request", "requestAccept", "requestReject", "settings", "timer"];
 
