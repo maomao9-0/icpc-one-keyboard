@@ -542,6 +542,36 @@ test("holder can release keyboard to requester from popup", async ({
   await bobContext.close();
 });
 
+test("main release button transfers keyboard to a pending requester", async ({
+  browser,
+}) => {
+  const aliceContext = await browser.newContext();
+  const bobContext = await browser.newContext();
+  const alice = await aliceContext.newPage();
+  const bob = await bobContext.newPage();
+
+  const code = await createSession(alice, "Alice");
+  await alice.getByRole("button", { name: "Claim keyboard" }).click();
+  await bob.goto(`/?code=${code}`);
+  await bob.locator('input[name="name"]').fill("Bob");
+  await bob.getByRole("button", { name: "Join Session" }).click();
+  await bob.getByRole("button", { name: "Request keyboard" }).click();
+
+  await expect(
+    alice.getByRole("button", { name: "Release to Bob" }),
+  ).toBeVisible();
+  await alice.getByRole("button", { name: "Release keyboard" }).click();
+
+  await expect(alice.locator(".holder")).toHaveText("Bob");
+  await expect(bob.locator(".holder")).toHaveText("Bob", { timeout: 5000 });
+  await expect(
+    bob.getByRole("button", { name: "Release keyboard" }),
+  ).toBeVisible();
+
+  await aliceContext.close();
+  await bobContext.close();
+});
+
 test("holder can reject requester popup and timeout auto-rejects", async ({
   browser,
 }) => {
@@ -1584,9 +1614,11 @@ test("api stores optional notes on claim request and release events", async ({
     name: "Alice",
     note: "Done with the handoff",
   });
+  expect(released.session.holder.name).toBe("Bob");
+  expect(released.session.pendingRequest).toBeNull();
   expect(
-    eventByMessage(released.session, "released the keyboard").message,
-  ).toContain('Alice released the keyboard: "Done with the handoff"');
+    eventByMessage(released.session, "gave the keyboard to Bob").message,
+  ).toContain('Alice gave the keyboard to Bob: "Done with the handoff"');
 });
 
 test("expanded audit log scrolls within its card", async ({ page }) => {

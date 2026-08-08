@@ -289,6 +289,11 @@ function release(session, body) {
   if (!session.holder) throw new Error("Keyboard is already unused");
   if (session.holder.clientId !== body.clientId)
     throw new Error("Only the holder can release the keyboard");
+  expireRequest(session);
+  if (session.pendingRequest) {
+    transferToRequester(session, body, note(body));
+    return;
+  }
   clearPendingRequest(session);
   const heldFor = clearHolder(session);
   const actionNote = note(body);
@@ -386,13 +391,20 @@ function acceptRequest(session, body) {
   if (!session.pendingRequest) throw new Error("No active request");
   if (!session.holder || session.holder.clientId !== body.clientId)
     throw new Error("Only the holder can accept requests");
+  transferToRequester(session, body);
+}
+
+function transferToRequester(session, body, actionNote = "") {
   const requester = session.pendingRequest;
   const heldFor = Date.now() - session.holder.since;
   event(
     session,
     body,
-    `gave the keyboard to ${requester.name}`,
-    `${memberName(session, body)} gave the keyboard to ${requester.name}`,
+    withNote(`gave the keyboard to ${requester.name}`, actionNote),
+    withNote(
+      `${memberName(session, body)} gave the keyboard to ${requester.name}`,
+      actionNote,
+    ),
     heldFor,
   );
   session.holder = {
