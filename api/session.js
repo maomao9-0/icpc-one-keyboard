@@ -65,6 +65,178 @@ function contestElapsed(session, now = Date.now()) {
   return Math.max(0, session.durationMs - remaining(session, now));
 }
 
+function createAnalysis() {
+  return {
+    version: 1,
+    cycleId: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    started: false,
+    elapsedMs: 0,
+    freeMs: 0,
+    untrackedMs: 0,
+    transitions: 0,
+    handoffs: 0,
+    requests: { total: 0, accepted: 0, rejected: 0, expired: 0 },
+    members: {},
+    timeline: [],
+    currentHolderId: null,
+    currentStintMs: 0,
+  };
+}
+
+function ensureAnalysis(session) {
+  if (!session.analysis || session.analysis.version !== 1) {
+    const analysis = createAnalysis();
+    const elapsed =
+      session.clockMode === "relative" ? contestElapsed(session) : 0;
+    if (elapsed > 0) {
+      analysis.started = true;
+      analysis.elapsedMs = elapsed;
+      analysis.untrackedMs = elapsed;
+      analysis.timeline.push({
+        atMs: 0,
+        clientId: "__untracked__",
+        name: "Earlier activity",
+      });
+      if (elapsed < session.durationMs) {
+        analysis.timeline.push(custodyPoint(session, elapsed));
+        if (session.holder) beginAnalysisTurn(analysis, session.holder);
+      }
+    }
+    session.analysis = analysis;
+    return;
+  }
+  const analysis = session.analysis;
+  analysis.requests ||= { total: 0, accepted: 0, rejected: 0, expired: 0 };
+  analysis.members ||= {};
+  analysis.timeline ||= [];
+  analysis.currentHolderId ||= null;
+  analysis.currentStintMs = Number(analysis.currentStintMs || 0);
+  analysis.untrackedMs = Number(analysis.untrackedMs || 0);
+}
+
+function analysisMember(analysis, clientId, name) {
+  const id = String(clientId);
+  analysis.members[id] ||= {
+    name,
+    heldMs: 0,
+    turns: 0,
+    longestMs: 0,
+    requests: 0,
+    fulfilledRequests: 0,
+  };
+  if (name) analysis.members[id].name = name;
+  return analysis.members[id];
+}
+
+function custodyPoint(session, atMs = session.analysis.elapsedMs) {
+  return session.holder
+    ? {
+        atMs,
+        clientId: session.holder.clientId,
+        name: session.holder.name,
+      }
+    : { atMs, clientId: null, name: "Free" };
+}
+
+function recordCustodyPoint(analysis, point) {
+  const last = analysis.timeline.at(-1);
+  if (last?.atMs === point.atMs) {
+    analysis.timeline[analysis.timeline.length - 1] = point;
+    return;
+  }
+  if (last?.clientId === point.clientId) return;
+  analysis.timeline.push(point);
+}
+
+function beginAnalysisTurn(analysis, holder) {
+  const member = analysisMember(analysis, holder.clientId, holder.name);
+  member.turns += 1;
+  analysis.currentHolderId = holder.clientId;
+  analysis.currentStintMs = 0;
+}
+
+function finalizeAnalysisTurn(analysis) {
+  if (!analysis.currentHolderId) return;
+  const member = analysis.members[analysis.currentHolderId];
+  if (member)
+    member.longestMs = Math.max(member.longestMs, analysis.currentStintMs);
+  analysis.currentHolderId = null;
+  analysis.currentStintMs = 0;
+}
+
+function settleAnalysis(session, now = Date.now()) {
+  const analysis = session.analysis;
+  if (!analysis?.started) return;
+  const elapsed = Math.min(session.durationMs, contestElapsed(session, now));
+  const delta = Math.max(0, elapsed - analysis.elapsedMs);
+  if (!delta) return;
+  if (analysis.currentHolderId) {
+    const holder =
+      session.holder?.clientId === analysis.currentHolderId
+        ? session.holder
+        : { clientId: analysis.currentHolderId, name: "Former teammate" };
+    const member = analysisMember(analysis, holder.clientId, holder.name);
+    member.heldMs += delta;
+    analysis.currentStintMs += delta;
+  } else {
+    analysis.freeMs += delta;
+  }
+  analysis.elapsedMs = elapsed;
+}
+
+function analysisIsRecording(session) {
+  return Boolean(
+    session.analysis?.started &&
+    session.analysis.elapsedMs < session.durationMs,
+  );
+}
+
+function startAnalysis(session) {
+  const analysis = session.analysis;
+  if (analysis.started || !session.timerRunning) return;
+  analysis.started = true;
+  analysis.elapsedMs = contestElapsed(session);
+  if (session.holder) beginAnalysisTurn(analysis, session.holder);
+  recordCustodyPoint(analysis, custodyPoint(session));
+}
+
+function changeAnalysisCustody(session, nextHolder) {
+  const analysis = session.analysis;
+  if (!analysisIsRecording(session)) return;
+  const currentId = analysis.currentHolderId;
+  const nextId = nextHolder?.clientId || null;
+  if (currentId === nextId) return;
+  const directHandoff = Boolean(currentId && nextId);
+  finalizeAnalysisTurn(analysis);
+  analysis.transitions += 1;
+  if (directHandoff) analysis.handoffs += 1;
+  if (nextHolder) beginAnalysisTurn(analysis, nextHolder);
+  recordCustodyPoint(analysis, {
+    atMs: analysis.elapsedMs,
+    clientId: nextId,
+    name: nextHolder?.name || "Free",
+  });
+}
+
+function recordAnalysisRequest(session, requester) {
+  if (!analysisIsRecording(session)) return;
+  const analysis = session.analysis;
+  analysis.requests.total += 1;
+  analysisMember(analysis, requester.clientId, requester.name).requests += 1;
+}
+
+function recordAnalysisRequestOutcome(session, outcome, requester) {
+  if (!analysisIsRecording(session)) return;
+  const analysis = session.analysis;
+  analysis.requests[outcome] += 1;
+  if (outcome === "accepted")
+    analysisMember(
+      analysis,
+      requester.clientId,
+      requester.name,
+    ).fulfilledRequests += 1;
+}
+
 function timer(session, body) {
   const command = String(body.command || "");
   const now = Date.now();
@@ -74,6 +246,7 @@ function timer(session, body) {
     session.clockMode = "relative";
     session.runningSince = now;
     session.timerRunning = session.remainingMs > 0;
+    startAnalysis(session);
     event(
       session,
       body,
@@ -106,6 +279,7 @@ function timer(session, body) {
       `${memberName(session, body)} reset the timer`,
     );
     if (hadRelativeClock) session.clockMode = "local";
+    session.analysis = createAnalysis();
     return;
   }
   throw new Error("Unknown timer command");
@@ -129,6 +303,8 @@ function ensureSession(session) {
   session.removedClients ||= {};
   session.lastActivityAt = Number(session.lastActivityAt || Date.now());
   backfillEventTiming(session);
+  ensureAnalysis(session);
+  settleAnalysis(session);
   if (session.pendingRequest?.expiresAt <= Date.now()) expireRequest(session);
 }
 
@@ -204,6 +380,7 @@ async function createSession(body) {
       pendingRequest: null,
       holder: null,
       events: [],
+      analysis: createAnalysis(),
       removedClients: {},
       lastActivityAt: now,
     };
@@ -270,11 +447,13 @@ function claim(session, body) {
   if (session.holder && session.holder.clientId !== body.clientId) {
     throw new Error(`${session.holder.name} is already using the keyboard`);
   }
-  session.holder = {
+  const nextHolder = {
     clientId: body.clientId,
     name: memberName(session, body),
     since: Date.now(),
   };
+  changeAnalysisCustody(session, nextHolder);
+  session.holder = nextHolder;
   session.pendingRequest = null;
   const actionNote = note(body);
   event(
@@ -295,6 +474,7 @@ function release(session, body) {
     return;
   }
   clearPendingRequest(session);
+  changeAnalysisCustody(session, null);
   const heldFor = clearHolder(session);
   const actionNote = note(body);
   event(
@@ -322,6 +502,7 @@ function requestKeyboard(session, body) {
     requestedAt: Date.now(),
     expiresAt: Date.now() + 10000,
   };
+  recordAnalysisRequest(session, session.pendingRequest);
   event(
     session,
     body,
@@ -335,6 +516,7 @@ function leave(session, body, context = {}) {
     session.members[body.clientId]?.name || memberName(session, body);
   const wasHolder = session.holder?.clientId === body.clientId;
   if (wasHolder) clearPendingRequest(session);
+  if (wasHolder) changeAnalysisCustody(session, null);
   const heldFor = wasHolder ? clearHolder(session) : 0;
   clearPendingRequest(session, body.clientId);
   delete session.members[body.clientId];
@@ -396,6 +578,8 @@ function acceptRequest(session, body) {
 
 function transferToRequester(session, body, actionNote = "") {
   const requester = session.pendingRequest;
+  recordAnalysisRequestOutcome(session, "accepted", requester);
+  changeAnalysisCustody(session, requester);
   const heldFor = Date.now() - session.holder.since;
   event(
     session,
@@ -421,6 +605,7 @@ function rejectRequest(session, body) {
   if (!session.holder || session.holder.clientId !== body.clientId)
     throw new Error("Only the holder can reject requests");
   const requester = session.pendingRequest;
+  recordAnalysisRequestOutcome(session, "rejected", requester);
   session.pendingRequest = null;
   event(
     session,
@@ -434,6 +619,7 @@ function expireRequest(session) {
   if (!session.pendingRequest || session.pendingRequest.expiresAt > Date.now())
     return;
   const requester = session.pendingRequest;
+  recordAnalysisRequestOutcome(session, "expired", requester);
   session.pendingRequest = null;
   session.events.push({
     id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
@@ -460,6 +646,7 @@ function settings(session, body) {
     session.remainingMs = durationMs;
     session.runningSince = null;
     session.timerRunning = false;
+    session.analysis = createAnalysis();
   }
   event(
     session,

@@ -15,21 +15,28 @@ function normalizeName(value) {
 function parseName(value) {
   const name = normalizeName(value).slice(0, 32);
   if (!name) throw new Error("Missing name");
-  if (!allowedNamePattern.test(name)) throw new Error("Name contains unsupported characters");
+  if (!allowedNamePattern.test(name))
+    throw new Error("Name contains unsupported characters");
   return name;
 }
 
 function parseClientId(value) {
-  const clientId = String(value || "").trim().slice(0, 80);
+  const clientId = String(value || "")
+    .trim()
+    .slice(0, 80);
   if (!clientId) throw new Error("Missing client id");
-  if (!/^[A-Za-z0-9._:-]{1,80}$/.test(clientId)) throw new Error("Invalid client id");
+  if (!/^[A-Za-z0-9._:-]{1,80}$/.test(clientId))
+    throw new Error("Invalid client id");
   return clientId;
 }
 
 function parseClientKey(value) {
-  const clientKey = String(value || "").trim().toLowerCase();
+  const clientKey = String(value || "")
+    .trim()
+    .toLowerCase();
   if (!clientKey) throw new Error("Missing client key");
-  if (!/^[a-f0-9]{32,64}$/.test(clientKey)) throw new Error("Invalid client key");
+  if (!/^[a-f0-9]{32,64}$/.test(clientKey))
+    throw new Error("Invalid client key");
   return clientKey;
 }
 
@@ -66,7 +73,9 @@ function publicSession(session) {
     remainingMs: session.remainingMs,
     clockMode: session.clockMode || "local",
     holder: session.holder ? { ...session.holder } : null,
-    pendingRequest: session.pendingRequest ? { ...session.pendingRequest } : null,
+    pendingRequest: session.pendingRequest
+      ? { ...session.pendingRequest }
+      : null,
     members: Object.fromEntries(
       Object.entries(session.members || {}).map(([clientId, member]) => [
         clientId,
@@ -74,6 +83,20 @@ function publicSession(session) {
       ]),
     ),
     events: (session.events || []).map((entry) => ({ ...entry })),
+    analysis: session.analysis
+      ? {
+          ...session.analysis,
+          requests: { ...session.analysis.requests },
+          members: Object.fromEntries(
+            Object.entries(session.analysis.members || {}).map(
+              ([clientId, member]) => [clientId, { ...member }],
+            ),
+          ),
+          timeline: (session.analysis.timeline || []).map((point) => ({
+            ...point,
+          })),
+        }
+      : null,
   };
 }
 

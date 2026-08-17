@@ -1401,6 +1401,241 @@ test("timer start stop and reset control remaining time", async ({ page }) => {
   await expect(page.getByRole("button", { name: "Start timer" })).toBeVisible();
 });
 
+test("analysis opens manually without changing the contest timer", async ({
+  page,
+}) => {
+  await createSession(page);
+  await page.getByRole("button", { name: "View analysis" }).click();
+
+  await expect(page.locator("[data-analysis-page]")).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "No contest data yet." }),
+  ).toBeVisible();
+  await expect(page.getByText("Live snapshot")).toBeVisible();
+
+  await page.getByRole("button", { name: "Back to session" }).click();
+  await expect(page.locator("[data-timer]")).toHaveText("5:00:00");
+  await expect(page.getByRole("button", { name: "Start timer" })).toBeVisible();
+
+  await page.getByRole("button", { name: "Claim keyboard" }).click();
+  await page.getByRole("button", { name: "Start timer" }).click();
+  await page.waitForTimeout(1100);
+  await page.getByRole("button", { name: "View analysis" }).click();
+
+  await expect(
+    page.getByRole("heading", { name: "Who drove, and when" }),
+  ).toBeVisible();
+  await expect(
+    page.locator(".timeline-name").filter({ hasText: "Alice" }),
+  ).toBeVisible();
+  await expect(
+    page.locator(".timeline-name").filter({ hasText: "Free" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("table", { name: "Teammate keyboard statistics" }),
+  ).toContainText("Alice");
+});
+
+test("analysis opens automatically when a synchronized timer reaches zero", async ({
+  page,
+}) => {
+  await createSession(page);
+  await page.getByRole("button", { name: "Start timer" }).click();
+
+  await page.route("**/api/session?**", async (route) => {
+    const response = await route.fetch();
+    const payload = await response.json();
+    if (payload.session?.analysis?.started) {
+      payload.session.timerRunning = false;
+      payload.session.runningSince = null;
+      payload.session.remainingMs = 0;
+      payload.session.analysis.elapsedMs = payload.session.durationMs;
+      payload.session.analysis.freeMs = payload.session.durationMs;
+    }
+    await route.fulfill({ response, json: payload });
+  });
+
+  await expect(page.locator("[data-analysis-page]")).toBeVisible({
+    timeout: 5000,
+  });
+  await expect(page.getByText("Final report")).toBeVisible();
+  await expect(page.getByText("Contest complete")).toBeVisible();
+
+  await page.getByRole("button", { name: "Back to session" }).click();
+  await expect(page.locator("[data-timer]")).toHaveText("0:00:00");
+  await page.waitForTimeout(1800);
+  await expect(page.locator("[data-analysis-page]")).toHaveCount(0);
+});
+
+test("api analysis tracks active custody and keeps a timeline beyond the audit cap", async () => {
+  const previousStore = process.env.ONE_KEYBOARD_STORE;
+  const previousSessions = globalThis.__oneKeyboardMemorySessions;
+  process.env.ONE_KEYBOARD_STORE = ":memory:";
+  globalThis.__oneKeyboardMemorySessions = new Map();
+  const handler = require("../api/session.js");
+  const nativeNow = Date.now;
+  let fakeNow = nativeNow();
+  Date.now = () => fakeNow;
+  try {
+    const created = await callSessionHandler(handler, {
+      body: {
+        action: "create",
+        clientId: "analysis-owner",
+        name: "Alice Analysis",
+        durationMs: 15 * 60 * 1000,
+      },
+    });
+    expect(created.status).toBe(200);
+    const code = created.data.code;
+    const auth = {
+      code,
+      clientId: "analysis-owner",
+      name: "Alice Analysis",
+    };
+
+    await callSessionHandler(handler, {
+      body: { action: "timer", command: "start", ...auth },
+    });
+    for (let index = 0; index < 45; index += 1) {
+      fakeNow += 1000;
+      await callSessionHandler(handler, {
+        body: { action: "claim", ...auth },
+      });
+      fakeNow += 1000;
+      await callSessionHandler(handler, {
+        body: { action: "release", ...auth },
+      });
+    }
+
+    const snapshot = await callSessionHandler(handler, {
+      method: "GET",
+      query: auth,
+    });
+    const { analysis, events } = snapshot.data.session;
+    expect(events).toHaveLength(80);
+    expect(analysis.timeline).toHaveLength(91);
+    expect(analysis.transitions).toBe(90);
+    expect(analysis.handoffs).toBe(0);
+    expect(analysis.members["analysis-owner"].turns).toBe(45);
+    expect(analysis.members["analysis-owner"].heldMs).toBe(45 * 1000);
+    expect(analysis.freeMs).toBe(45 * 1000);
+
+    const reset = await callSessionHandler(handler, {
+      body: { action: "timer", command: "reset", ...auth },
+    });
+    expect(reset.data.session.analysis.started).toBe(false);
+    expect(reset.data.session.analysis.timeline).toEqual([]);
+    expect(reset.data.session.analysis.transitions).toBe(0);
+  } finally {
+    Date.now = nativeNow;
+    if (previousStore === undefined) delete process.env.ONE_KEYBOARD_STORE;
+    else process.env.ONE_KEYBOARD_STORE = previousStore;
+    globalThis.__oneKeyboardMemorySessions = previousSessions;
+  }
+});
+
+test("api analysis excludes paused time and records requests and handoffs", async ({
+  page,
+}) => {
+  const created = await sessionPost(page, {
+    action: "create",
+    clientId: "analysis-alice",
+    name: "Alice Metrics",
+    durationMs: 15 * 60 * 1000,
+  });
+  const code = created.code;
+  await sessionPost(page, {
+    action: "claim",
+    code,
+    clientId: "analysis-alice",
+    name: "Alice Metrics",
+  });
+  await sessionPost(page, {
+    action: "join",
+    code,
+    clientId: "analysis-bob",
+    name: "Bob Metrics",
+  });
+  await sessionPost(page, {
+    action: "timer",
+    command: "start",
+    code,
+    clientId: "analysis-alice",
+    name: "Alice Metrics",
+  });
+  await sleep(140);
+  await sessionPost(page, {
+    action: "timer",
+    command: "stop",
+    code,
+    clientId: "analysis-alice",
+    name: "Alice Metrics",
+  });
+  const beforePause = await sessionGet(page, {
+    code,
+    clientId: "analysis-alice",
+    name: "Alice Metrics",
+  });
+  await sleep(180);
+  const afterPause = await sessionGet(page, {
+    code,
+    clientId: "analysis-alice",
+    name: "Alice Metrics",
+  });
+  expect(afterPause.session.analysis.elapsedMs).toBe(
+    beforePause.session.analysis.elapsedMs,
+  );
+  expect(afterPause.session.analysis.members["analysis-alice"].heldMs).toBe(
+    beforePause.session.analysis.members["analysis-alice"].heldMs,
+  );
+
+  await sessionPost(page, {
+    action: "request",
+    code,
+    clientId: "analysis-bob",
+    name: "Bob Metrics",
+  });
+  const handedOff = await sessionPost(page, {
+    action: "requestAccept",
+    code,
+    clientId: "analysis-alice",
+    name: "Alice Metrics",
+  });
+  expect(handedOff.session.analysis.requests).toMatchObject({
+    total: 1,
+    accepted: 1,
+  });
+  expect(handedOff.session.analysis.handoffs).toBe(1);
+  expect(handedOff.session.analysis.transitions).toBe(1);
+  expect(handedOff.session.analysis.members["analysis-bob"].turns).toBe(1);
+  expect(
+    handedOff.session.analysis.members["analysis-bob"].fulfilledRequests,
+  ).toBe(1);
+
+  const bobLeft = await sessionPost(page, {
+    action: "leave",
+    code,
+    clientId: "analysis-bob",
+    name: "Bob Metrics",
+  });
+  expect(bobLeft.session.analysis.members["analysis-bob"].name).toBe(
+    "Bob Metrics",
+  );
+
+  const previousCycle = bobLeft.session.analysis.cycleId;
+  const changedDuration = await sessionPost(page, {
+    action: "settings",
+    code,
+    clientId: "analysis-alice",
+    name: "Alice Metrics",
+    timerEnabled: true,
+    durationMs: 16 * 60 * 1000,
+  });
+  expect(changedDuration.session.analysis.cycleId).not.toBe(previousCycle);
+  expect(changedDuration.session.analysis.started).toBe(false);
+  expect(changedDuration.session.analysis.timeline).toEqual([]);
+});
+
 test("timer audit timestamps become contest-relative only after start", async ({
   page,
 }) => {

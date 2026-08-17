@@ -1,9 +1,11 @@
 import { useEffect, useState } from "react";
 import {
+  ActivityIcon,
   CopyIcon,
   LeaveIcon,
   SettingsIcon,
 } from "./components/Icons.jsx";
+import { AnalysisView } from "./components/AnalysisView.jsx";
 import { useSessionController } from "./hooks/useSessionController.js";
 import { useLiveNow } from "./hooks/useLiveNow.js";
 import {
@@ -58,6 +60,8 @@ export default function App() {
   const [auditOpen, setAuditOpen] = useState(false);
   const [noteOpen, setNoteOpen] = useState(false);
   const [note, setNote] = useState("");
+  const [requestedAnalysisCycle, setRequestedAnalysisCycle] = useState("");
+  const [dismissedAnalysisCycle, setDismissedAnalysisCycle] = useState("");
   const now = useLiveNow(session, poll);
 
   useEffect(() => {
@@ -117,6 +121,25 @@ export default function App() {
       </main>
     );
 
+  const analysisCycle = session.analysis?.cycleId || "legacy";
+  const contestEnded = Boolean(
+    session.analysis?.started && remainingMs(session, now) === 0,
+  );
+  const showAnalysis =
+    requestedAnalysisCycle === analysisCycle ||
+    (contestEnded && dismissedAnalysisCycle !== analysisCycle);
+  if (showAnalysis)
+    return (
+      <AnalysisView
+        session={session}
+        now={now}
+        onBack={() => {
+          setRequestedAnalysisCycle("");
+          if (contestEnded) setDismissedAnalysisCycle(analysisCycle);
+        }}
+      />
+    );
+
   const action = primaryAction(identity.clientId, session);
   return (
     <main className="shell">
@@ -140,6 +163,14 @@ export default function App() {
             <span className="code-label">Session</span>
             <span className="code">{session.code}</span>
           </span>
+          <button
+            className="btn utility-btn"
+            type="button"
+            onClick={() => setRequestedAnalysisCycle(analysisCycle)}
+          >
+            <ActivityIcon />
+            <span>View analysis</span>
+          </button>
           <button
             className="btn utility-btn icon"
             type="button"
